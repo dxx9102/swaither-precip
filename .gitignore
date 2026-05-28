@@ -1,0 +1,132 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+*.egg
+*.whl
+dist/
+build/
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.conda/
+.micromamba/
+conda-env/
+
+# =========================
+# Jupyter / notebooks
+# =========================
+*.nbconvert.ipynb
+
+# =========================
+# Slurm / HPC logs
+# =========================
+slurm-*.out
+slurm-*.err
+*.log
+
+# =========================
+# Experiment tracking
+# =========================
+wandb/
+mlruns/
+tensorboard/
+tb_logs/
+lightning_logs/
+runs/
+python-user-base/
+
+# =========================
+# Model artifacts / checkpoints
+# =========================
+checkpoints/
+ckpts/
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.mdlus
+*.safetensors
+*.bin
+*.tar
+
+# =========================
+# Data (must be obtained separately)
+# =========================
+data/
+*.h5
+*.hdf5
+*.nc
+*.nc4
+*.zarr/
+*.parquet
+*.feather
+*.csv
+*.tsv
+*.npy
+*.npz
+*.pickle
+*.pkl
+
+# =========================
+# Outputs / caches
+# =========================
+outputs/
+output/
+results/
+tmp/
+cache/
+**/.cache/
+*.tmp
+*.bak
+*.orig
+
+# =========================
+# Hydra
+# =========================
+.multirun/
+multirun/
+hydra_outputs/
+
+# =========================
+# Secrets
+# =========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets.yaml
+api_keys.yaml
+credentials.json
+
+# =========================
+# DVC (if you ever add it)
+# =========================
+.dvc/
