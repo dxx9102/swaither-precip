@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Originally based on physicsnemo/examples/generative/corrdiff configs.
+#
+# Step 2 (super-resolution): regression U-Net component of CorrDiff.
+# Maps low-resolution precipitation (the output of Step 1 bias correction,
+# bilinearly upsampled to the high-res grid) to high-resolution precipitation.
+# Trained in a "perfect super-resolution" setting using coarsened observations.
+
+hydra:
+    job:
+        chdir: false
+        name: step2_regression
+    run:
+        dir: ./outputs/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+defaults:
+    - _self_: null
+    - dataset: custom
+    - model: regression
+    - model_size: mini
+    - training: ${model}
+
+# Dataset parameters.
+# Low-res input is precipitation only (output of Step 1); high-res target is
+# CombiPrecip on the 1 km grid.
+dataset:
+    type: ./swaither/datasets/downscaling_dataset.py::CustomDownscalingDatasetNoLeadFastLite_2
+    stats_path: ./data/stats/stats_aifs_single_STEP2_wElevation_allData.json
+    low_res_file: ./data/AIFS_Single_pred_concat_2019_2023_all_0_24Horizons_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    high_res_file: ./data/CPCH_processed_precipitation_2019_2023_concat_NotFlat_6hSUM_00_12_wetEnough_gamma_wElevation.nc
+    input_variables: ["precip6h_cumulative_capped"]
+    output_variables: ["precip6h_cumulative_capped"]
+    invariant_variables: ["altitude"]
+    log_precip: True
+    crop_mult: 16              # for high-res (target on CombiPrecip 1 km grid)
+    interp_low_res: True       # interpolate low_res onto the high_res grid
+    preload_low: True
+    preload_dtype: "float16"
+
+# Training parameters
+training:
+    hp:
+        lr: 2e-4
+        batch_size_per_gpu: "auto"
+        split_fraction: 0.8
+        seed: 42
+    io:
+        print_progress_freq: 50
+        validation_freq: 250
+        save_checkpoint_freq: 10000
+
+# Weights & Biases logging.
+wandb:
+    # Configure whether to use wandb: "offline", "online", "disabled"
+    mode: disabled
+    project: swaither-precip-step2-regression
+    entity: ""
+    results_dir: "./wandb"
+    watch_model: false

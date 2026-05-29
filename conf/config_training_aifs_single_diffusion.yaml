@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Originally based on physicsnemo/examples/generative/corrdiff configs.
+#
+# Step 2 (super-resolution): conditional diffusion U-Net component of CorrDiff.
+# Generates stochastic residuals on top of the Step 2 regression output.
+# Requires a pre-trained regression checkpoint, set in training.io.regression_checkpoint_path.
+
+hydra:
+    job:
+        chdir: false
+        name: step2_diffusion
+    run:
+        dir: ./outputs/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+defaults:
+    - _self_: null
+    - dataset: custom
+    - model: diffusion
+    - model_size: mini
+    - training: ${model}
+
+# Dataset parameters.
+dataset:
+    type: ./swaither/datasets/downscaling_dataset.py::CustomDownscalingDatasetNoLeadFastLite_2
+    stats_path: ./data/stats/stats_aifs_single_STEP2_wElevation_allData.json
+    low_res_file: ./data/AIFS_Single_pred_concat_2019_2023_all_0_24Horizons_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    high_res_file: ./data/CPCH_processed_precipitation_2019_2023_concat_NotFlat_6hSUM_00_12_wetEnough_gamma_wElevation.nc
+    input_variables: ["precip6h_cumulative_capped"]
+    output_variables: ["precip6h_cumulative_capped"]
+    invariant_variables: ["altitude"]
+    log_precip: True
+    crop_mult: 16
+    interp_low_res: True
+    preload_low: True
+    preload_dtype: "float16"
+
+# Training parameters
+training:
+    hp:
+        batch_size_per_gpu: "auto"
+        # Patch size for patched diffusion. Should be set based on autocorrelation
+        # analysis of the residuals (see CorrDiff documentation for guidance).
+        patch_shape_x: 448
+        patch_shape_y: 448
+        # Number of patches sampled per input. Total patches = patch_num * total_batch_size.
+        patch_num: 10
+        lr: 2e-4
+        lr_rampup: 0
+        split_fraction: 0.8
+        seed: 42
+    io:
+        print_progress_freq: 250
+        validation_freq: 250
+        save_checkpoint_freq: 10000
+        # Path to the trained regression checkpoint (Step 2 regression).
+        # Update this to point to your trained regression checkpoint, or use the
+        # download_checkpoints.py helper to fetch the pre-trained one.
+        regression_checkpoint_path: ./checkpoints/step2_regression.mdlus
+        num_workers: 0
+
+# Weights & Biases logging.
+wandb:
+    # Configure whether to use wandb: "offline", "online", "disabled"
+    mode: disabled
+    project: swaither-precip-step2-diffusion
+    entity: ""
+    results_dir: "./wandb"
+    watch_model: false

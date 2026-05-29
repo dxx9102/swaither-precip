@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Originally based on physicsnemo/examples/generative/corrdiff configs.
+#
+# Step 1 bias correction baseline: single-horizon variant (no FiLM lead-time
+# conditioning). Train one model per lead time of interest (e.g., 6h, 3-day,
+# 6-day). Used in the paper as a baseline for comparison against the
+# multi-horizon FiLM-conditioned bias correction.
+#
+# The horizon is determined by which low_res / stats files are provided.
+# The example below uses the 3-day horizon files.
+
+hydra:
+    job:
+        chdir: false
+        name: step1_singlelead_baseline
+    run:
+        dir: ./outputs/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+defaults:
+    - _self_: null
+    - dataset: custom
+    - model: regression_bias_correction
+    - model_size: mini
+    - training: ${model}
+
+# Dataset parameters (single-horizon).
+# Change `stats_path`, `low_res_file`, and `high_res_file` to switch lead time.
+dataset:
+    type: ./swaither/datasets/downscaling_dataset.py::CustomDownscalingDatasetNoLeadFastLite_2
+    stats_path: ./data/stats/stats_aifs_single_3day_biasCorrection.json
+    low_res_file: ./data/AIFS_Single_pred_concat_2019_2023_SingleHori_3day_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    high_res_file: ./data/AIFS_Single_pred_concat_2019_2023_SingleHori_3day_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    input_variables: ["total_precipitation_NoNeg",
+                      "convective_precipitation_NoNeg",
+                      "total_cloud_cover",
+                      "wind_10m_u",
+                      "wind_10m_v",
+                      "specific_humidity_500hPa",
+                      "specific_humidity_850hPa",
+                      "temperature_500hPa",
+                      "temperature_850hPa",
+                      "geopotential_500hPa",
+                      "geopotential_850hPa"]
+    output_variables: ["precip6h_cumulative_capped"]
+    invariant_variables: []
+    log_precip: True
+    crop_mult: 8               # for low-res (bias correction operates on AIFS grid)
+    interp_low_res: False
+    preload_low: True
+    preload_dtype: "float16"
+
+# Training parameters
+training:
+    hp:
+        lr: 2e-4
+        batch_size_per_gpu: "auto"
+        split_fraction: 0.8
+        seed: 42
+    io:
+        print_progress_freq: 50
+        validation_freq: 250
+        save_checkpoint_freq: 10000
+
+# Weights & Biases logging.
+wandb:
+    # Configure whether to use wandb: "offline", "online", "disabled"
+    mode: disabled
+    project: swaither-precip-step1-singlelead
+    entity: ""
+    results_dir: "./wandb"
+    watch_model: false

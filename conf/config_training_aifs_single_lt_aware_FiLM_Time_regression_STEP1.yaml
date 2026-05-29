@@ -1,0 +1,136 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Originally based on physicsnemo/examples/generative/corrdiff configs,
+# adapted for the SwAIther-Precip lead-time-aware bias correction model.
+
+hydra:
+    job:
+        chdir: false
+        name: aifs_single_lt_aware_regression
+    run:
+        dir: ./outputs/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+# Base parameters for dataset, model, training, and validation
+defaults:
+    - _self_: null
+    - dataset: custom
+    # The dataset type for training.
+    # Accepted values:
+    #   `gefs_hrrr`: full GEFS-HRRR dataset (continental US)
+    #   `hrrr_mini`: smaller HRRR dataset (continental US), for fast experiments
+    #   `cwb`: full CWB dataset (Taiwan)
+    #   `custom`: user-defined dataset (parameters set below)
+
+    - model: lt_aware_FiLM_regression_bias_correction
+    # The model type.
+    # Accepted values:
+    #   `regression`: a regression U-Net for deterministic predictions
+    #   `regression_bias_correction`: same U-Net, learning only the residual
+    #     starting from global model predictions
+    #   `lt_aware_ce_regression`: similar to `regression` but with lead-time conditioning
+    #   `lt_aware_FiLM_regression_bias_correction`: the SwAIther-Precip Step 1 model
+    #     (FiLM-conditioned bias correction with residual formulation)
+    #   `diffusion`: a diffusion U-Net for residual predictions
+    #   `patched_diffusion`: a more memory-efficient diffusion model
+    #   `lt_aware_patched_diffusion`: similar to `patched_diffusion` but with lead-time conditioning
+
+    - model_size: normal
+    # The model size configuration.
+    # Accepted values:
+    #   `normal`: full model size (used in the paper)
+    #   `mini`: smaller model for fast experiments / debugging
+
+    - training: ${model}
+    # Base training parameters, determined by the model type.
+
+
+# Dataset parameters (used when dataset type is `custom`).
+# All paths are relative to the repository root. By convention, place your data
+# (or a symlink to it) at `./data/` in the repo root. See README for setup.
+dataset:
+    type: ./swaither/datasets/downscaling_dataset.py::CustomDownscalingDatasetWithLeadFast_Time
+    # Path to the user-defined dataset class, in the format `path/to/file.py::ClassName`.
+
+    stats_path: ./data/stats/stats_aifs_single_all_0_24Horizons_wElev_biasCorrection.json
+    # Path to JSON file containing normalization statistics.
+
+    low_res_file: ./data/AIFS_Single_pred_concat_2019_2023_all_0_24Horizons_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    high_res_file: ./data/AIFS_Single_pred_concat_2019_2023_all_0_24Horizons_NoNeg_andLowResPrecipWetEnough_gamma.nc
+    # For Step 1 (bias correction), low_res_file and high_res_file are the same:
+    # the AIFS predictions serve as both input (low-res context) and grid template.
+
+    input_variables: ["total_precipitation_NoNeg",
+                      "convective_precipitation_NoNeg",
+                      "total_cloud_cover",
+                      "wind_10m_u",
+                      "wind_10m_v",
+                      "specific_humidity_500hPa",
+                      "specific_humidity_850hPa",
+                      "temperature_500hPa",
+                      "temperature_850hPa",
+                      "geopotential_500hPa",
+                      "geopotential_850hPa"]
+    output_variables: ["precip6h_cumulative_capped"]
+    invariant_variables: ["altitude"]
+
+    log_precip: True
+    crop_mult: 8           # for low-res Step 1 training (bias correction, same grid)
+    interp_low_res: False  # do not interpolate inputs (Step 1 operates at native AIFS resolution)
+
+
+# Training parameters
+training:
+    hp:
+        lr: 2e-4
+        batch_size_per_gpu: "auto"
+        split_fraction: 0.8
+        seed: 42
+
+        # Cross-lead-time consistency regularization (see Section 2.3 of the paper).
+        # Set to 0 to disable; default 2 corresponds to the lambda=2 model used in the paper.
+        lambda_time: 2
+        lambda_time_warmup_epochs: 5
+
+        # Huber loss transition point (delta). delta=1.0 gives equal weighting to L1/L2 at unit scale.
+        huber_delta: 1.0
+
+        # Curriculum learning: progressively unlock more lead times during training.
+        # Not used for the main paper results; available for experimentation.
+        curriculum:
+            enabled: False
+            epochs_per_step: 1   # unlock more leads every N epochs
+            leads_per_step: 4    # number of additional leads unlocked per step
+
+        # Static lead-time filter for multi-step fine-tuning.
+        # Used to restrict training to a subset of lead times (e.g., specialize on long leads).
+        # See `docs/reproducing_paper.md` for the MultiFineTuned schedule.
+        lead_filter:
+            enabled: False
+            min_lead: 0
+            max_lead: 7
+
+    io:
+        print_progress_freq: 50      # print training progress every N batches
+        validation_freq: 250         # run validation every N samples
+        save_checkpoint_freq: 10000  # save checkpoint every N samples
+
+
+# Weights & Biases logging.
+# Disabled by default; set `mode: online` and provide your `entity` to enable.
+wandb:
+    # Configure whether to use wandb: "offline", "online", "disabled"
+    mode: disabled
+    project: swaither-precip-bias-correction
+    entity: ""               # your wandb username or team name
+    results_dir: "./wandb"
+    watch_model: false       # if true, wandb will track model parameters and gradients

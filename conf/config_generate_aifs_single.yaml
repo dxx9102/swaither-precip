@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Originally based on physicsnemo/examples/generative/corrdiff configs.
+#
+# Generation config: runs the Step 2 super-resolution pipeline (regression + diffusion)
+# on a low-resolution input file. The low_res_file is typically the output of
+# Step 1 bias correction. Examples of common configurations are listed in the
+# commented section under `low_res_file` below.
+
+hydra:
+    job:
+        chdir: false
+        name: diff_samples_generation
+    run:
+        dir: ./outputs/generations/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+# Base parameters for dataset, model, and generation
+defaults:
+    - dataset: custom
+    - generation: non_patched
+
+# Dataset parameters.
+#
+# The low_res_file is the input to generation: typically the output of Step 1
+# bias correction (or raw AIFS for ablation comparisons). Below are example
+# filenames for common configurations; comment in the one you want and ensure
+# the corresponding file exists in `./data/`.
+dataset:
+    type: ./swaither/datasets/downscaling_dataset.py::CustomDownscalingDatasetNoLeadFastLite_3
+    stats_path: ./data/stats/stats_aifs_single_STEP2_wElevation_allData.json
+
+    # Bias-corrected output from the SwAIther-Precip Step 1 model (lambda=2, multi-lead):
+    low_res_file: ./data/AIFS_bias_corrected_precip_VAL_WeeklySplit_UNet_NoCurri_lam2_AllHori_interp_good.nc
+    # Other options (e.g., for baselines or ablations):
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_UNet_MultiStepFineTuning_2_AllHori_interp_good.nc
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_AIFSOriginalPreds_AllHori_interp_good.nc
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_BaselineB4_AllHori_interp_good.nc
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_SingleLead_6h_interp_good.nc
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_SingleLead_3days_interp_good.nc
+    #   - AIFS_bias_corrected_precip_VAL_WeeklySplit_SingleLead_6days_interp_good.nc
+
+    high_res_file: ./data/CPCH_processed_precipitation_2019_2023_concat_NotFlat_6hSUM_00_12_wetEnough_gamma_wElevation.nc
+    input_variables: ["precip6h_cumulative_capped"]
+    output_variables: ["precip6h_cumulative_capped"]
+    invariant_variables: ["altitude"]
+    log_precip: True
+    crop_mult: 16
+    interp_low_res: True
+    preload_low: True
+    preload_dtype: "float16"
+
+# Generation parameters
+generation:
+    num_ensembles: 12          # number of ensemble members per input
+    seed_batch_size: 12        # batch size for inference
+
+    patch_shape_x: 448
+    patch_shape_y: 448
+
+    has_lead_time: True
+    num_horizons: 24
+    # Lead-time indices to generate (0=6h, 1=12h, ..., 23=6 days at 6-hourly resolution).
+    horizons: [0, 1, 2, 3]
+
+    # If True, generation runs on all time stamps available in low_res_file
+    # (subsampled via time_stride and capped by max_times).
+    # If False, only the time stamps listed under `times:` below are used.
+    use_all_times_from_low_res: True
+    time_stride: 4             # keep every Nth time stamp
+    max_times: 120             # cap the total number of times after striding
+
+    # List of specific ISO 8601 time stamps to generate, when
+    # `use_all_times_from_low_res: False`.
+    times: []
+
+    io:
+        # Path to trained Step 2 regression checkpoint (deterministic mean predictor).
+        reg_ckpt_filename: ./checkpoints/step2_regression.mdlus
+        # Path to trained Step 2 diffusion checkpoint (residual generator).
+        res_ckpt_filename: ./checkpoints/step2_diffusion.mdlus
+
+# Weights & Biases logging (disabled by default for generation runs).
+wandb:
+    # Configure whether to use wandb: "offline", "online", "disabled"
+    mode: disabled
