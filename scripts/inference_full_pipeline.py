@@ -12,17 +12,12 @@ Required user inputs:
   (iii) Stats JSON files:          one for STEP 1, one for STEP 2
   (iv)  Altitude / invariant data  (.nc with 'altitude' on the high-res grid)
 
-No Hydra / YAML config files needed.  Run with:
-    python inference_pipeline.py --help
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
-import contextlib
 from dataclasses import dataclass, field
 from functools import partial
 from typing import List, Optional, Tuple
@@ -33,6 +28,8 @@ import torch
 import xarray as xr
 from numpy.random import default_rng
 from tqdm.auto import tqdm
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 # ---------------------------------------------------------------------------
 # PhysicsNeMo imports  (adjust if your installation differs)
@@ -64,6 +61,7 @@ DEFAULT_BC_INPUT_VARIABLES = [
     "geopotential_850hPa",
 ]
 
+
 # ===================================================================
 #  Helper dataclass – groups every knob the user can set
 # ===================================================================
@@ -72,30 +70,28 @@ class PipelineConfig:
     """All tuneable knobs for the inference pipeline."""
 
     # --- data paths ---
-    aifs_pred_file: str = ""          # (i) low-res AIFS predictions
-    altitude_file: str = ""           # (iv) high-res altitude / invariant NetCDF
+    aifs_pred_file: str = ""  # (i) low-res AIFS predictions
+    altitude_file: str = ""  # (iv) high-res altitude / invariant NetCDF
 
     # --- checkpoint paths ---
-    bc_ckpt: str = ""                 # bias-correction model  (.mdlus)
-    reg_ckpt: str = ""                # CorrDiff regression    (.mdlus)
-    dif_ckpt: str = ""                # CorrDiff diffusion     (.mdlus)
+    bc_ckpt: str = ""  # bias-correction model  (.mdlus)
+    reg_ckpt: str = ""  # CorrDiff regression    (.mdlus)
+    dif_ckpt: str = ""  # CorrDiff diffusion     (.mdlus)
 
     # --- stats files ---
-    bc_stats: str = ""                # STEP 1 stats JSON
-    sr_stats: str = ""                # STEP 2 stats JSON
+    bc_stats: str = ""  # STEP 1 stats JSON
+    sr_stats: str = ""  # STEP 2 stats JSON
 
     # --- output ---
     output_file: str = "pipeline_output.nc"
-    save_bc: bool = False                 # save bias-corrected intermediate as separate file
+    save_bc: bool = False  # save bias-corrected intermediate as separate file
 
     # --- input variable names inside AIFS prediction NetCDF ---
     bc_input_variables: List[str] = field(
         default_factory=lambda: list(DEFAULT_BC_INPUT_VARIABLES)
     )
     bc_output_variable: str = "precip6h_cumulative_capped"
-    bc_invariant_variables: List[str] = field(
-        default_factory=lambda: ["altitude"]
-    )
+    bc_invariant_variables: List[str] = field(default_factory=lambda: ["altitude"])
 
     sr_input_variable: str = "precip6h_cumulative_capped"
     sr_output_variable: str = "precip6h_cumulative_capped"
@@ -104,18 +100,18 @@ class PipelineConfig:
     # --- generation settings ---
     num_ensembles: int = 12
     seed_batch_size: int = 12
-    horizons: Optional[List[int]] = None   # None → all
+    horizons: Optional[List[int]] = None  # None → all
     time_stride: int = 1
     max_times: Optional[int] = None
 
     # --- model behaviour ---
-    inference_mode: str = "all"       # "regression", "diffusion", "all"
+    inference_mode: str = "all"  # "regression", "diffusion", "all"
     hr_mean_conditioning: bool = True
-    crop_mult: int = 16               # spatial crop to this multiple
-    log_precip: bool = True           # log1p / expm1 transform on precip
+    crop_mult: int = 16  # spatial crop to this multiple
+    log_precip: bool = True  # log1p / expm1 transform on precip
 
     # --- sampler ---
-    sampler_type: str = "deterministic"   # "deterministic" or "stochastic"
+    sampler_type: str = "deterministic"  # "deterministic" or "stochastic"
     sampler_num_steps: int = 18
     sampler_solver: str = "euler"
 
@@ -216,8 +212,12 @@ def denorm_and_delog_tensor(
     out_max: np.ndarray,
 ) -> torch.Tensor:
     """Undo min-max norm (in log-space) then expm1.  y_norm: (B, C, H, W)."""
-    omin = torch.as_tensor(out_min, device=y_norm.device, dtype=y_norm.dtype)[:, None, None]
-    omax = torch.as_tensor(out_max, device=y_norm.device, dtype=y_norm.dtype)[:, None, None]
+    omin = torch.as_tensor(out_min, device=y_norm.device, dtype=y_norm.dtype)[
+        :, None, None
+    ]
+    omax = torch.as_tensor(out_max, device=y_norm.device, dtype=y_norm.dtype)[
+        :, None, None
+    ]
     rng = torch.clamp(omax - omin, min=1e-6)
     y_log = y_norm * rng + omin
     y_lin = torch.expm1(y_log)
@@ -266,7 +266,9 @@ def step1_bias_correction(
     lon_s = W_raw - W_crop
     lon_e = W_raw
     H, W = lat_e - lat_s, lon_e - lon_s
-    print(f"  LR grid: {H_raw}x{W_raw} → cropped to {H}x{W}  (crop_mult={crop_mult_step1})")
+    print(
+        f"  LR grid: {H_raw}x{W_raw} → cropped to {H}x{W}  (crop_mult={crop_mult_step1})"
+    )
 
     # --- Load stats for STEP 1 (dynamic + invariant variables) ---
     all_bc_input_vars = cfg.bc_input_variables + cfg.bc_invariant_variables
@@ -337,7 +339,9 @@ def step1_bias_correction(
 
             # Fill dynamic channels
             for ci, var in enumerate(cfg.bc_input_variables):
-                da = ds[var].isel(time=ti, lat=slice(lat_s, lat_e), lon=slice(lon_s, lon_e))
+                da = ds[var].isel(
+                    time=ti, lat=slice(lat_s, lat_e), lon=slice(lon_s, lon_e)
+                )
                 v = da.values.astype(np.float32)  # (L, H, W) or (H, W)
                 if v.ndim == 2:
                     v = np.broadcast_to(v[None], (L, H, W))
@@ -351,7 +355,13 @@ def step1_bias_correction(
             sanitize(batch_x)
             if cfg.log_precip:
                 batch_x[:, 0] = np.log1p(batch_x[:, 0])
-                np.nan_to_num(batch_x[:, 0], copy=False, nan=0.0, posinf=LOG_CLIP, neginf=-LOG_CLIP)
+                np.nan_to_num(
+                    batch_x[:, 0],
+                    copy=False,
+                    nan=0.0,
+                    posinf=LOG_CLIP,
+                    neginf=-LOG_CLIP,
+                )
 
             # Min-max normalize (all channels: dynamic + invariant)
             for b in range(L):
@@ -364,7 +374,9 @@ def step1_bias_correction(
             for b_start in range(0, L, cfg.bc_batch_size):
                 b_end = min(b_start + cfg.bc_batch_size, L)
                 x_batch = torch.from_numpy(batch_x[b_start:b_end]).to(
-                    device=device, dtype=torch.float32, memory_format=torch.channels_last
+                    device=device,
+                    dtype=torch.float32,
+                    memory_format=torch.channels_last,
                 )
                 leads_batch = lead_labels[b_start:b_end]
 
@@ -425,7 +437,9 @@ def step1b_interpolate(
 
     T, L, _, _ = bc_precip.shape
     H_hr, W_hr = len(hr_lats), len(hr_lons)
-    print(f"  LR shape: {bc_precip.shape[2]}x{bc_precip.shape[3]}  →  HR shape: {H_hr}x{W_hr}")
+    print(
+        f"  LR shape: {bc_precip.shape[2]}x{bc_precip.shape[3]}  →  HR shape: {H_hr}x{W_hr}"
+    )
 
     bc_hr = np.zeros((T, L, H_hr, W_hr), dtype=np.float32)
 
@@ -558,8 +572,10 @@ def step2_superres(
     # --- Use pre-computed overlap crop slices ---
     H = lat_e - lat_s
     W = lon_e - lon_s
-    print(f"  HR grid: {len(hr_lats_full)}x{len(hr_lons_full)} → "
-          f"overlap-cropped to {H}x{W}  (crop_mult={cfg.crop_mult})")
+    print(
+        f"  HR grid: {len(hr_lats_full)}x{len(hr_lons_full)} → "
+        f"overlap-cropped to {H}x{W}  (crop_mult={cfg.crop_mult})"
+    )
 
     hr_lats = hr_lats_full[lat_s:lat_e]
     hr_lons = hr_lons_full[lon_s:lon_e]
@@ -650,7 +666,9 @@ def step2_superres(
     lon_var[:] = hr_lons.astype(np.float32)
 
     # pred = ensemble of downscaled samples
-    pred_var = f.createVariable("pred", "f4", ("ensemble", "time", "lead", "y", "x"), zlib=True, complevel=2)
+    pred_var = f.createVariable(
+        "pred", "f4", ("ensemble", "time", "lead", "y", "x"), zlib=True, complevel=2
+    )
 
     # --- Generation function (same logic as original generate script) ---
     def generate_fn(
@@ -671,14 +689,20 @@ def step2_superres(
 
         image_res = None
         if net_res is not None:
-            mean_hr = image_reg[0:1] if (image_reg is not None and cfg.hr_mean_conditioning) else None
+            mean_hr = (
+                image_reg[0:1]
+                if (image_reg is not None and cfg.hr_mean_conditioning)
+                else None
+            )
             image_res = diffusion_step(
                 net=net_res,
                 sampler_fn=sampler_fn,
                 img_shape=img_shape,
                 img_out_channels=img_out_channels,
                 rank_batches=rank_batches,
-                img_lr=img_lr.expand(cfg.seed_batch_size, -1, -1, -1).to(memory_format=torch.channels_last),
+                img_lr=img_lr.expand(cfg.seed_batch_size, -1, -1, -1).to(
+                    memory_format=torch.channels_last
+                ),
                 rank=0,
                 device=device,
                 mean_hr=mean_hr,
@@ -703,9 +727,10 @@ def step2_superres(
     with torch.no_grad():
         for lead_pos, hori_idx in enumerate(horizons):
             for t_pos, t_global in enumerate(time_indices):
-
                 # --- Prepare input: precip + altitude → (1, 2, H, W) ---
-                precip_slice = bc_hr[t_global, hori_idx, lat_s:lat_e, lon_s:lon_e].copy()
+                precip_slice = bc_hr[
+                    t_global, hori_idx, lat_s:lat_e, lon_s:lon_e
+                ].copy()
 
                 # Build x_arr: channel 0 = precip, channel 1 = altitude
                 x_arr = np.stack([precip_slice, alt_processed], axis=0)  # (2, H, W)
@@ -716,14 +741,22 @@ def step2_superres(
                 # Log-transform on precip (channel 0 only)
                 if cfg.log_precip:
                     x_arr[0] = np.log1p(x_arr[0])
-                    np.nan_to_num(x_arr[0:1], copy=False, nan=0.0, posinf=LOG_CLIP, neginf=-LOG_CLIP)
+                    np.nan_to_num(
+                        x_arr[0:1],
+                        copy=False,
+                        nan=0.0,
+                        posinf=LOG_CLIP,
+                        neginf=-LOG_CLIP,
+                    )
 
                 # Min-max normalize
                 x_norm = normalize_minmax(x_arr, sr_inp_min, sr_inp_max)
 
                 # To tensor (1, C, H, W)
                 x_t = torch.from_numpy(x_norm[None]).to(
-                    device=device, dtype=torch.float32, memory_format=torch.channels_last
+                    device=device,
+                    dtype=torch.float32,
+                    memory_format=torch.channels_last,
                 )
 
                 # Skip if all-NaN input
@@ -732,7 +765,9 @@ def step2_superres(
                     continue
 
                 # Seeds for ensembles
-                seeds = RNG.integers(low=0, high=2**31 - 1, size=cfg.num_ensembles, dtype=np.int64).tolist()
+                seeds = RNG.integers(
+                    low=0, high=2**31 - 1, size=cfg.num_ensembles, dtype=np.int64
+                ).tolist()
                 num_batches = max(1, (len(seeds) - 1) // cfg.seed_batch_size + 1)
                 all_batches = torch.as_tensor(seeds).tensor_split(num_batches)
                 rank_batches = list(all_batches)  # single-GPU: all batches go to rank 0
@@ -808,120 +843,105 @@ def run_pipeline(cfg: PipelineConfig):
     # ---- Optionally save bias-corrected data ----
     if cfg.save_bc:
         save_bc_intermediate(
-            bc_hr, times, lead_values,
-            hr_lats_full, hr_lons_full,
-            lat_s, lat_e, lon_s, lon_e,
+            bc_hr,
+            times,
+            lead_values,
+            hr_lats_full,
+            hr_lons_full,
+            lat_s,
+            lat_e,
+            lon_s,
+            lon_e,
             cfg,
         )
 
     # ---- STEP 2: CorrDiff super-resolution ----
     step2_superres(
-        cfg, bc_hr, times, lead_values,
-        hr_lats_full, hr_lons_full,
-        lat_s, lat_e, lon_s, lon_e,
-        altitude_2d, device
+        cfg,
+        bc_hr,
+        times,
+        lead_values,
+        hr_lats_full,
+        hr_lons_full,
+        lat_s,
+        lat_e,
+        lon_s,
+        lon_e,
+        altitude_2d,
+        device,
     )
 
 
 # ===================================================================
-#  CLI
+#  Hydra entry point
 # ===================================================================
-def parse_args() -> PipelineConfig:
-    p = argparse.ArgumentParser(
-        description="End-to-end precipitation downscaling: bias-correction → interpolation → CorrDiff",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
 
-    # --- Required ---
-    p.add_argument("--aifs-pred-file", required=True, help="AIFS low-res predictions (.nc)")
-    p.add_argument("--altitude-file", required=True, help="High-res altitude NetCDF (.nc)")
-    p.add_argument("--bc-ckpt", required=True, help="Bias-correction model checkpoint (.mdlus)")
-    p.add_argument("--reg-ckpt", required=True, help="CorrDiff regression checkpoint (.mdlus)")
-    p.add_argument("--dif-ckpt", required=True, help="CorrDiff diffusion checkpoint (.mdlus)")
-    p.add_argument("--bc-stats", required=True, help="STEP 1 stats JSON")
-    p.add_argument("--sr-stats", required=True, help="STEP 2 stats JSON")
 
-    # --- Output ---
-    p.add_argument("--output-file", default="pipeline_output.nc", help="Output NetCDF path")
-    p.add_argument("--save-bc", action="store_true",
-                   help="Save bias-corrected intermediate as a separate NetCDF (<output>_bias_corrected.nc)")
-
-    # --- Variable names ---
-    p.add_argument(
-        "--bc-input-variables",
-        nargs="+",
-        default=DEFAULT_BC_INPUT_VARIABLES,
-        help="Input variable names for bias correction model",
-    )
-    p.add_argument(
-        "--bc-invariant-variables",
-        nargs="+",
-        default=["altitude"],
-        help="Invariant (static) variable names for bias correction model (e.g. altitude)",
-    )
-    p.add_argument("--sr-input-variable", default="precip6h_cumulative_capped")
-    p.add_argument("--sr-output-variable", default="precip6h_cumulative_capped")
-    p.add_argument("--invariant-variable", default="altitude")
-
-    # --- Generation ---
-    p.add_argument("--num-ensembles", type=int, default=12)
-    p.add_argument("--seed-batch-size", type=int, default=12)
-    p.add_argument("--horizons", type=int, nargs="*", default=None, help="Horizon indices (default: all)")
-    p.add_argument("--time-stride", type=int, default=1)
-    p.add_argument("--max-times", type=int, default=None)
-
-    # --- Model behaviour ---
-    p.add_argument("--inference-mode", choices=["regression", "diffusion", "all"], default="all")
-    p.add_argument("--no-hr-mean-conditioning", action="store_true")
-    p.add_argument("--crop-mult", type=int, default=16)
-    p.add_argument("--no-log-precip", action="store_true")
-
-    # --- Sampler ---
-    p.add_argument("--sampler-type", choices=["deterministic", "stochastic"], default="deterministic")
-    p.add_argument("--sampler-num-steps", type=int, default=18)
-    p.add_argument("--sampler-solver", default="euler")
-
-    # --- Performance ---
-    p.add_argument("--bc-batch-size", type=int, default=256)
-    p.add_argument("--force-fp16", action="store_true")
-
-    args = p.parse_args()
-
+def _cfg_from_hydra(cfg: DictConfig) -> PipelineConfig:
+    """Map the nested Hydra config to the flat PipelineConfig dataclass."""
+    inf = cfg.inference
     return PipelineConfig(
-        aifs_pred_file=args.aifs_pred_file,
-        altitude_file=args.altitude_file,
-        bc_ckpt=args.bc_ckpt,
-        reg_ckpt=args.reg_ckpt,
-        dif_ckpt=args.dif_ckpt,
-        bc_stats=args.bc_stats,
-        sr_stats=args.sr_stats,
-        output_file=args.output_file,
-        save_bc=args.save_bc,
-        bc_input_variables=args.bc_input_variables,
-        bc_invariant_variables=args.bc_invariant_variables,
-        sr_input_variable=args.sr_input_variable,
-        sr_output_variable=args.sr_output_variable,
-        invariant_variable=args.invariant_variable,
-        num_ensembles=args.num_ensembles,
-        seed_batch_size=args.seed_batch_size,
-        horizons=args.horizons,
-        time_stride=args.time_stride,
-        max_times=args.max_times,
-        inference_mode=args.inference_mode,
-        hr_mean_conditioning=not args.no_hr_mean_conditioning,
-        crop_mult=args.crop_mult,
-        log_precip=not args.no_log_precip,
-        sampler_type=args.sampler_type,
-        sampler_num_steps=args.sampler_num_steps,
-        sampler_solver=args.sampler_solver,
-        bc_batch_size=args.bc_batch_size,
-        force_fp16=args.force_fp16,
+        # Input data
+        aifs_pred_file=inf.inputs.aifs_pred_file,
+        altitude_file=inf.inputs.altitude_file,
+        # Checkpoints
+        bc_ckpt=inf.checkpoints.bc,
+        reg_ckpt=inf.checkpoints.reg,
+        dif_ckpt=inf.checkpoints.dif,
+        # Stats
+        bc_stats=inf.stats.bc,
+        sr_stats=inf.stats.sr,
+        # Output
+        output_file=inf.output.file,
+        save_bc=inf.output.save_bc,
+        # Variables
+        bc_input_variables=list(inf.variables.bc_input),
+        bc_output_variable=inf.variables.bc_output,
+        bc_invariant_variables=list(inf.variables.bc_invariant),
+        sr_input_variable=inf.variables.sr_input,
+        sr_output_variable=inf.variables.sr_output,
+        invariant_variable=inf.variables.invariant,
+        # Generation
+        num_ensembles=inf.generation.num_ensembles,
+        seed_batch_size=inf.generation.seed_batch_size,
+        horizons=(
+            list(inf.generation.horizons)
+            if inf.generation.horizons is not None
+            else None
+        ),
+        time_stride=inf.generation.time_stride,
+        max_times=inf.generation.max_times,
+        # Model behaviour
+        inference_mode=inf.model.inference_mode,
+        hr_mean_conditioning=inf.model.hr_mean_conditioning,
+        crop_mult=inf.model.crop_mult,
+        log_precip=inf.model.log_precip,
+        # Sampler
+        sampler_type=inf.sampler.type,
+        sampler_num_steps=inf.sampler.num_steps,
+        sampler_solver=inf.sampler.solver,
+        # Performance
+        bc_batch_size=inf.performance.bc_batch_size,
+        force_fp16=inf.performance.force_fp16,
     )
 
 
-# ===================================================================
-#  Entry point
-# ===================================================================
+@hydra.main(
+    version_base=None,
+    config_path="../conf",
+    config_name="config_inference_full_pipeline",
+)
+def main(cfg: DictConfig) -> None:
+    """Hydra entry point. Loads config, builds PipelineConfig, runs pipeline."""
+    print("\n" + "=" * 60)
+    print("Resolved configuration:")
+    print("=" * 60)
+    print(OmegaConf.to_yaml(cfg, resolve=True))
+    print("=" * 60 + "\n")
+
+    pipeline_cfg = _cfg_from_hydra(cfg)
+    run_pipeline(pipeline_cfg)
+
+
 if __name__ == "__main__":
-    cfg = parse_args()
-    run_pipeline(cfg)
+    main()

@@ -1,0 +1,48 @@
+SwAIther-Precip
+Copyright 2026 Dan Assouline and contributors
+
+This product includes software developed by NVIDIA CORPORATION & AFFILIATES,
+distributed under the Apache License, Version 2.0:
+
+    PhysicsNeMo (formerly Modulus)
+    https://github.com/NVIDIA/physicsnemo
+    Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES
+
+The following files in this repository are derivative works based on
+PhysicsNeMo source code, with modifications:
+
+  - conf/*.yaml                              (training/generation configs)
+  - swaither/datasets/base.py                (unmodified; provides DownscalingDataset)
+  - swaither/datasets/dataset.py             (modified: removed cwb/hrrr_mini/gefs_hrrr
+                                              dataset registrations not used here)
+  - swaither/datasets/downscaling_dataset.py (derived from physicsnemo example
+                                              datasets, substantially modified)
+  - scripts/train_weekly.py                  (derived from physicsnemo CorrDiff
+                                              training script, substantially modified
+                                              for lead-time-aware bias correction with
+                                              a rolling weekly train/test split)
+  - scripts/train_yearly.py                  (same as above, but with a year-based
+                                              train/test split)
+  - scripts/generate_super_resolution.py     (derived from physicsnemo CorrDiff
+                                              generation script, modified for
+                                              multi-lead inference)
+
+Modifications are described in:
+
+  - The paper accompanying this code:
+    https://arxiv.org/abs/2605.16163
+
+  - File-level copyright headers (when applicable).
+
+All other code in this repository is original work by the SwAIther-Precip
+authors, also licensed under Apache 2.0.
+
+This product additionally uses the following datasets, which are NOT
+redistributed with the code:
+
+  - AIFS forecasts:   produced by ECMWF (European Centre for Medium-Range
+                      Weather Forecasts). See https://www.ecmwf.int/en/forecasts/datasets/aifs
+  - CombiPrecip:      produced by MeteoSwiss (Federal Office of Meteorology
+                      and Climatology). Licensed for non-commercial research.
+  - DHM25:            produced by SwissTopo (Swiss Federal Office of Topography).
+                      Available under an open license from swisstopo.admin.ch.

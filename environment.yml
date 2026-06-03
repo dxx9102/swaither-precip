@@ -1,0 +1,74 @@
+# ============================================================
+# SwAIther-Precip — Conda environment
+#
+# Recommended installation method on most systems, since conda
+# handles the system libraries needed by cartopy/rasterio/rioxarray
+# cleanly. To create the environment:
+#
+#     conda env create -f environment.yml
+#     conda activate swaither-precip
+#
+# Or with mamba (faster):
+#
+#     mamba env create -f environment.yml
+#     mamba activate swaither-precip
+#
+# To enable GPU support, ensure your CUDA driver matches the
+# pytorch-cuda version below, or adjust accordingly. For CPU-only,
+# remove the `pytorch-cuda` line.
+# ============================================================
+
+name: swaither-precip
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  - python>=3.10,<3.13
+
+  # --- Core ML ---
+  - pytorch>=2.0
+  - pytorch-cuda=12.1                  # adjust to your driver; remove for CPU-only
+
+  # --- Geospatial (best via conda) ---
+  - cartopy>=0.22
+  - rioxarray>=0.15
+  - rasterio>=1.3
+  - netCDF4>=1.6
+  - zarr>=2.16
+
+  # --- Numerical / scientific computing ---
+  - numpy>=1.24
+  - scipy>=1.11
+  - pandas>=2.0
+  - scikit-learn>=1.3
+  - statsmodels>=0.14
+  - xarray>=2023.1
+
+  # --- Plotting ---
+  - matplotlib>=3.7
+  - seaborn>=0.13
+
+  # --- Configuration ---
+  - hydra-core>=1.3
+  - omegaconf>=2.3
+
+  # --- Utilities ---
+  - tqdm>=4.65
+
+  # --- Notebooks (optional) ---
+  - jupyter>=1.0
+  - ipykernel>=6.25
+  - nbformat>=5.9
+
+  # --- pip-only packages ---
+  - pip
+  - pip:
+      # PhysicsNeMo (formerly Modulus) — see requirements.txt for version notes
+      - nvidia-physicsnemo==1.2.0
+      # HuggingFace Hub for checkpoint download
+      - huggingface_hub>=0.20
+      # Experiment tracking
+  - wandb>=0.16

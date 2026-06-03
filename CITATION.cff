@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+title: >-
+  SwAIther-Precip: Lead-Time-Aware Bias Correction Enables
+  Kilometer-Scale Downscaling of Global AI Precipitation
+  Forecasts over Switzerland
+message: >-
+  If you use this software or the published checkpoints,
+  please cite the accompanying paper.
+type: software
+authors:
+  - given-names: Dan
+    family-names: Assouline
+    email: dassouline@ethz.ch
+  - given-names: Erwan
+    family-names: Koch
+  - given-names: Federico
+    family-names: Amato
+  - given-names: Filippo
+    family-names: Quarenghi
+  - given-names: Daniele
+    family-names: Nerini
+  - given-names: Thibaut
+    family-names: Loiseau
+  - given-names: Kyle
+    family-names: van de Langemheen
+  - given-names: Tom
+    family-names: Beucler
+repository-code: 'https://github.com/garelicu/swaither-precip'
+url: 'https://arxiv.org/abs/2605.16163'
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: >-
+    SwAIther-Precip: Lead-Time-Aware Bias Correction
+    Enables Kilometer-Scale Downscaling of Global AI
+    Precipitation Forecasts over Switzerland
+  authors:
+    - given-names: Dan
+      family-names: Assouline
+    - given-names: Erwan
+      family-names: Koch
+    - given-names: Federico
+      family-names: Amato
+    - given-names: Filippo
+      family-names: Quarenghi
+    - given-names: Daniele
+      family-names: Nerini
+    - given-names: Thibaut
+      family-names: Loiseau
+    - given-names: Kyle
+      family-names: van de Langemheen
+    - given-names: Tom
+      family-names: Beucler
+  year: 2026
+  journal: 'arXiv preprint'
+  identifiers:
+    - type: other
+      value: 'arXiv:2605.16163'
+      description: arXiv preprint identifier
+  url: 'https://arxiv.org/abs/2605.16163'

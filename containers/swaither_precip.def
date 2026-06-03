@@ -1,0 +1,180 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:25.08-py3
+
+# ============================================================================
+# SwAIther-Precip Singularity container definition
+#
+# Recipe for a self-contained SwAIther-Precip environment based on NVIDIA's
+# official PyTorch container. Builds a micromamba env on top of the base
+# image, reusing the base CUDA-enabled PyTorch via a site-packages bridge
+# rather than installing a duplicate.
+#
+# Build (requires Singularity / Apptainer 3.5+):
+#
+#     singularity build swaither_precip.sif containers/swaither_precip.def
+#
+# Build on an HPC login node (no root required):
+#
+#     singularity build --fakeroot swaither_precip.sif containers/swaither_precip.def
+#
+# Or remotely on Sylabs (also no root):
+#
+#     singularity build --remote swaither_precip.sif containers/swaither_precip.def
+#
+# Use:
+#
+#     export SINGULARITY_BINDPATH="/path/to/data,/path/to/repo"
+#     singularity shell --nv -B "$(pwd):/ws" -W /ws swaither_precip.sif
+#     # inside the container:
+#     micromamba activate -p /opt/micromamba/envs/swaither-precip
+#     python scripts/train_weekly.py --config-name=...
+#
+# Architecture support: x86_64 and aarch64 (ARM, e.g. NVIDIA GH200).
+# ============================================================================
+
+%labels
+    Project "SwAIther-Precip"
+    Purpose "Reproducible environment for the SwAIther-Precip codebase"
+    Base    "nvcr.io/nvidia/pytorch:25.08-py3"
+    PhysicsNeMo "1.2.0"
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    export PATH=$MAMBA_ROOT_PREFIX/bin:$PATH
+    export CONDA_ALWAYS_COPY=1
+    export MAMBA_NO_HARDLINKS=1
+    export CUDA_HOME=/usr/local/cuda
+    export LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+    export XDG_CACHE_HOME=/tmp
+    export PYTHONNOUSERSITE=1
+
+%post
+    set -eux
+
+    # Keep env vars during the build too
+    export DEBIAN_FRONTEND=noninteractive
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    export PATH=$MAMBA_ROOT_PREFIX/bin:$PATH
+    export CONDA_ALWAYS_COPY=1
+    export MAMBA_NO_HARDLINKS=1
+
+    # Pre-create common HPC bind targets so `-B` won't fail on missing dirs
+    mkdir -p /work /scratch /users /ws
+
+    # ---- System tools ----
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl bzip2 git vim htop tree gcc g++ make \
+        && rm -rf /var/lib/apt/lists/*
+
+    # ---- micromamba binary (architecture-aware) ----
+    arch="$(uname -m)"
+    if [ "$arch" = "x86_64" ]; then
+        MURL="https://micro.mamba.pm/api/micromamba/linux-64/latest"
+    elif [ "$arch" = "aarch64" ]; then
+        MURL="https://micro.mamba.pm/api/micromamba/linux-aarch64/latest"
+    else
+        echo "Unsupported architecture: $arch"; exit 1
+    fi
+    curl -L "$MURL" | tar -xvj -C /usr/local/bin --strip-components=1 bin/micromamba
+
+    # ---- Detect the base Python that has CUDA-enabled PyTorch ----
+    # The NGC PyTorch image ships PyTorch system-wide. We need to know:
+    #   1. Which Python interpreter to mimic in our micromamba env (so the
+    #      site-packages layout matches and the bridge works).
+    #   2. Where the base PyTorch's site-packages directory lives (so we can
+    #      add it to our env's import path via a .pth file).
+    TORCH_INFO="$(
+      for P in /opt/conda/bin/python /usr/local/bin/python /usr/bin/python python; do
+        if [ -x "$P" ]; then
+          "$P" - <<'PY' && exit 0
+import sys
+import os
+try:
+    import torch
+except Exception:
+    raise SystemExit(1)
+# Print on two lines:
+#   1) the major.minor Python version
+#   2) the directory containing torch (one level above torch/__init__.py)
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+print(os.path.dirname(os.path.dirname(torch.__file__)))
+PY
+        fi
+      done; exit 1
+    )" || { echo "FATAL: No base Python found with CUDA-enabled PyTorch."; exit 1; }
+
+    TORCH_PYVER="$(printf "%s\n" "$TORCH_INFO" | sed -n '1p')"
+    TORCH_SP="$(printf "%s\n" "$TORCH_INFO" | sed -n '2p')"
+
+    echo "Detected base PyTorch — Python ${TORCH_PYVER}, site-packages at ${TORCH_SP}"
+    [ -z "$TORCH_PYVER" ] && { echo "FATAL: empty TORCH_PYVER"; exit 1; }
+    [ -z "$TORCH_SP" ]    && { echo "FATAL: empty TORCH_SP";    exit 1; }
+    [ -d "$TORCH_SP" ]    || { echo "FATAL: site-packages not found at $TORCH_SP"; exit 1; }
+
+    # ---- Create the micromamba env with the same Python minor version ----
+    # We do NOT install pytorch here — we'll reuse the base image's PyTorch
+    # via a site-packages bridge (see next step) to avoid a duplicate install
+    # and CUDA compatibility issues.
+    mkdir -p "${MAMBA_ROOT_PREFIX}"
+    micromamba create -y -p "${MAMBA_ROOT_PREFIX}/envs/swaither-precip" \
+        -c conda-forge --always-copy \
+        "python=${TORCH_PYVER}" pip \
+        hydra-core omegaconf \
+        psutil h5py netcdf4 h5netcdf cftime \
+        opencv numba \
+        matplotlib seaborn cartopy \
+        scikit-learn scipy einops statsmodels \
+        tqdm joblib typer termcolor \
+        properscoring xskillscore \
+        dask geopandas pyarrow rioxarray rasterio \
+        wandb tensorboard mlflow \
+        jupyter ipykernel \
+        s3fs treelib zarr nvtx
+
+    # Keep NumPy 1.x for ABI compatibility with PyTorch 2.x
+    micromamba run -p "${MAMBA_ROOT_PREFIX}/envs/swaither-precip" \
+        pip install --no-cache-dir 'numpy<2'
+
+    # ---- Bridge: expose the base CUDA-enabled PyTorch to our env ----
+    # We drop a .pth file into our env's site-packages pointing to the base
+    # PyTorch's site-packages. Python will add that directory to sys.path at
+    # interpreter startup, so `import torch` inside our env finds the base
+    # install instead of needing a duplicate.
+    ENV_SP="${MAMBA_ROOT_PREFIX}/envs/swaither-precip/lib/python${TORCH_PYVER}/site-packages"
+    echo "${TORCH_SP}" > "${ENV_SP}/_base_cuda_torch.pth"
+
+    # ---- PhysicsNeMo (pinned, --no-deps to avoid a duplicate Torch) ----
+    micromamba run -p "${MAMBA_ROOT_PREFIX}/envs/swaither-precip" \
+        pip install --no-cache-dir --no-deps \
+        nvidia-physicsnemo==1.2.0 \
+        huggingface_hub
+
+    micromamba clean -a -y
+
+%runscript
+    # Default behaviour: run any command in the swaither-precip env
+    exec env XDG_CACHE_HOME=/tmp micromamba run -p /opt/micromamba/envs/swaither-precip "$@"
+
+%test
+    # Verify that PyTorch is importable via the bridge and the env basics work
+    /opt/micromamba/envs/swaither-precip/bin/python - <<'PY'
+import platform
+import sys
+print("architecture:", platform.machine())
+print("python:", sys.version.split()[0])
+
+import torch
+print("torch:", torch.__version__)
+print("torch CUDA build:", getattr(torch.version, "cuda", None))
+
+import inspect
+print("torch file:", inspect.getfile(torch))
+
+import numpy
+print("numpy:", numpy.__version__)
+
+import physicsnemo
+print("physicsnemo:", physicsnemo.__version__)
+PY

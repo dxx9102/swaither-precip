@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Dan Assouline and contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Full inference pipeline: AIFS forecasts -> Step 1 bias correction
+# -> Step 2 super-resolution (regression + diffusion).
+# Produces an ensemble of high-resolution precipitation forecasts.
+
+hydra:
+    job:
+        chdir: false
+        name: inference_full_pipeline
+    run:
+        dir: ./outputs/generations/${hydra:job.name}
+    searchpath:
+        - pkg://conf/base
+
+inference:
+
+    # --- Input data ---
+    inputs:
+        # Raw AIFS forecasts to downscale.
+        aifs_pred_file: ./data/AIFS_inputs.nc
+        # Altitude / DHM-augmented file (provides the static elevation channel for the high-res grid).
+        altitude_file:  ./data/CPCH_processed_precipitation_2019_2023_concat_NotFlat_6hSUM_00_12_wetEnough_gamma_wElevation.nc
+
+    # --- Trained model checkpoints ---
+    checkpoints:
+        bc:  ./checkpoints/step1_bias_correction.mdlus     # Step 1 bias-correction U-Net (FiLM)
+        reg: ./checkpoints/step2_regression.mdlus          # Step 2 regression component
+        dif: ./checkpoints/step2_diffusion.mdlus           # Step 2 diffusion component
+
+    # --- Normalization statistics ---
+    stats:
+        bc: ./data/stats/stats_aifs_single_all_0_24Horizons_wElev_biasCorrection.json
+        sr: ./data/stats/stats_aifs_single_STEP2_wElevation_allData.json
+
+    # --- Output ---
+    output:
+        file: ${hydra:run.dir}/samples.nc
+        # If True, also save the bias-corrected intermediate field as a sidecar file.
+        save_bc: True
+
+    # --- Variable names (must match the NetCDF inputs) ---
+    variables:
+        bc_input:
+            - total_precipitation_NoNeg
+            - convective_precipitation_NoNeg
+            - total_cloud_cover
+            - wind_10m_u
+            - wind_10m_v
+            - specific_humidity_500hPa
+            - specific_humidity_850hPa
+            - temperature_500hPa
+            - temperature_850hPa
+            - geopotential_500hPa
+            - geopotential_850hPa
+        bc_output: precip6h_cumulative_capped
+        bc_invariant: [altitude]
+
+        sr_input:   precip6h_cumulative_capped
+        sr_output:  precip6h_cumulative_capped
+        invariant:  altitude
+
+    # --- Generation parameters ---
+    generation:
+        num_ensembles: 12                       # ensemble members per (time, lead)
+        seed_batch_size: 12                     # batch size of seeds per inference call
+        # Which lead-time indices to generate (0=6h, 1=12h, ..., 23=6d). null = all 24.
+        horizons: [0, 1, 2, 3, 7, 11, 15, 19, 23]
+        time_stride: 1                          # keep every N-th time stamp
+        max_times: 200                          # cap on the number of times after striding (null = no cap)
+
+    # --- Model behaviour ---
+    model:
+        inference_mode: all                     # "regression", "diffusion", or "all"
+        hr_mean_conditioning: True
+        crop_mult: 16                           # spatial crop to this multiple
+        log_precip: True                        # log1p / expm1 transform on precip
+
+    # --- Sampler ---
+    sampler:
+        type: deterministic                     # "deterministic" or "stochastic"
+        num_steps: 18
+        solver: euler
+
+    # --- Performance ---
+    performance:
+        bc_batch_size: 256                      # batch size for Step 1 inference
+        force_fp16: False                       # cast Step 1 to fp16 for speed
