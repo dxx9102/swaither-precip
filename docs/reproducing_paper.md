@@ -237,7 +237,7 @@ the corresponding bias-corrected `.nc` files produced by inference.
 
 ### 4.2 Step 2 (super-resolution + end-to-end) metrics
 
-`notebooks/03_step2_evaluation.ipynb`
+`notebooks/03_step12_evaluation.ipynb`
 
 Computes CRPS, FSS, CSI, MSE, eS / eA / eL spectral metrics on the
 super-resolved ensemble outputs. Produces the end-to-end metric tables,

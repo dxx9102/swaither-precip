@@ -16,7 +16,7 @@ AI-based weather forecasting system developed by ECMWF. We use the
 deterministic version (AIFS-Single 1.0) at its native 0.25° resolution as the
 low-resolution input to our downscaling pipeline. The model can be used from Huggingface checkpoints (https://huggingface.co/ecmwf/aifs-single-1.0)
 
-**Where to get it:** See [ecmwf.int/en/forecasts/datasets/aifs](https://www.ecmwf.int/en/forecasts/datasets/aifs) for general data access.
+**Where to get it:** See [ecmwf.int/en/forecasts/datasets/aifs](https://www.ecmwf.int/en/forecasts/datasets/aifs) for general information on available data.
 Access policies vary by user category (research, operational, commercial). Note that the AIFS forecasts dataset used in the SwAIther-Precip paper was built by the authors using the aifs-single-1.0 model and IFS initial conditions, and is not available for the public at the moment. We may release it publically at some point. 
 
 **What we use:** Forecasts over the domain covering Switzerland, with 24

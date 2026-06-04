@@ -190,12 +190,7 @@ python scripts/inference_full_pipeline.py \
     --config-name=config_inference_full_pipeline.yaml
 ```
 
-Then open the evaluation notebooks under `notebooks/` to compute metrics and reproduce paper figures:
-
-```bash
-jupyter notebook notebooks/02_step1_evaluation.ipynb
-jupyter notebook notebooks/03_step2_evaluation.ipynb
-```
+Then open the evaluation notebooks under `notebooks/` to compute metrics and reproduce paper figures, in particular the `02_step1_evaluation.ipynb` and `03_step12_evaluation.ipynb` notebooks. 
 
 See [`docs/reproducing_paper.md`](docs/reproducing_paper.md) for the exact commands and config combinations used to reproduce each table and figure in the paper.
 
@@ -205,7 +200,7 @@ See [`docs/reproducing_paper.md`](docs/reproducing_paper.md) for the exact comma
 
 The training and evaluation datasets are **not redistributed in this repository** due to licensing restrictions:
 
-- **AIFS forecasts** are produced by the European Centre for Medium-Range Weather Forecasts (ECMWF). See [ecmwf.int](https://www.ecmwf.int/en/forecasts/datasets/aifs) for access.
+- **AIFS forecasts** were produced by Assouline et al. using the aifs-single-1.0 official implementation (https://huggingface.co/ecmwf/aifs-single-1.0) with IFS analysis initial conditions.
 - **CombiPrecip radar-gauge observations** are produced by MeteoSwiss and are licensed for non-commercial research use. Contact MeteoSwiss for access.
 - **DHM25 digital elevation model** is published by SwissTopo under an open license. Available from [swisstopo.admin.ch](https://www.swisstopo.admin.ch/).
 
@@ -245,7 +240,7 @@ This project is licensed under the [Apache License 2.0](LICENSE). See the [`NOTI
 
 ## Acknowledgments
 
-This work was carried out at the [Swiss Data Science Center](https://www.datascience.ch/) (SDSC) and the [Université de Lausanne](https://www.unil.ch/), with operational support from [MeteoSwiss](https://www.meteoswiss.admin.ch/). We thank the ECMWF AIFS team for early access to the AIFS forecasts, and the MeteoSwiss data team for access to the CombiPrecip dataset. Compute was provided by the University of Lausanne's Curnagl cluster.
+This work was carried out at the [Swiss Data Science Center](https://www.datascience.ch/) (SDSC) and the [Université de Lausanne](https://www.unil.ch/), with  support from [MeteoSwiss](https://www.meteoswiss.admin.ch/). We thank MeteoSwiss for access to the IFS initial conditions data. Please see the manuscript of the paper for additional acknowledgments.
 
 ---
 
