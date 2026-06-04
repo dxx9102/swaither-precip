@@ -10,7 +10,26 @@
 #
 # Originally based on physicsnemo/examples/generative/corrdiff/train.py.
 
-import os, time, psutil, hydra, torch
+import os
+import sys
+
+# Make the swaither/ package importable regardless of where this script is launched from.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# --- Backwards-compatibility alias ---
+# Some pre-existing checkpoints record their model class's import path as
+# `models.X` (the package was named `models` at the repo root before being
+# moved under `swaither/`). PhysicsNeMo's `Module.from_checkpoint` looks up
+# the class by importing that module path; this alias makes such lookups
+# resolve to `swaither.models.X` instead. New checkpoints record the
+# correct path and don't need this alias.
+import swaither.models as _legacy_models_alias
+sys.modules.setdefault("models", _legacy_models_alias)
+
+import time, psutil, hydra, torch
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel
@@ -33,9 +52,9 @@ from physicsnemo.launch.utils import (
     get_checkpoint_dir,
 )
 
-from datasets.dataset import init_train_valid_datasets_from_config, init_dataset_from_config, register_dataset
+from swaither.datasets.dataset import init_train_valid_datasets_from_config, init_dataset_from_config, register_dataset
 
-from helpers.train_helpers import (
+from swaither.helpers.train_helpers import (
     set_patch_shape,
     set_seed,
     configure_cuda_for_consistent_precision,
@@ -57,23 +76,23 @@ import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 
 # for the custom cmap
-from helpers.viz_helpers import (
+from swaither.helpers.viz_helpers import (
     ColormapConfig,
 )
 import cartopy.crs as ccrs
 import cartopy.io.shapereader as shpreader
 
 # import the custom bias corrector
-from models import UNetResidualCorrectorClamped3, UNetResidualCorrectorClampedFiLM
+from swaither.models import UNetResidualCorrectorClamped3, UNetResidualCorrectorClampedFiLM
 
 # and the mass constraints wrappers
-from models import EDMPrecondSuperResolutionWithGlobalMass, EDMPrecondSuperResolutionWithGlobalMassScheduled
+#from swaither.models import EDMPrecondSuperResolutionWithGlobalMass, EDMPrecondSuperResolutionWithGlobalMassScheduled
 
 # ViT model
-from models import ViTBiasCorrectorFiLM   
+from swaither.models import ViTBiasCorrectorFiLM   
 
 # for the custom loss with temporal regularization 
-from helpers.custom_losses import RegressionLossTemporalSmooth, RegressionLossTimeConsistency, RegressionHuberLossTimeConsistency
+from swaither.losses.custom_losses import RegressionLossTemporalSmooth, RegressionLossTimeConsistency, RegressionHuberLossTimeConsistency
 
 
 import numpy as np
@@ -147,7 +166,7 @@ def profiler_emit_nvtx():
 
 
 # Train the CorrDiff model using the configurations in "conf/config_training.yaml"
-@hydra.main(version_base="1.2", config_path="conf", config_name="config_training")
+@hydra.main(version_base="1.2", config_path="../conf", config_name="config_training")
 def main(cfg: DictConfig) -> None:
 
     # Initialize distributed environment for training

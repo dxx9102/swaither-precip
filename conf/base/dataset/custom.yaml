@@ -17,7 +17,7 @@
 # Dataset type. Must be overridden.
 type: ???
 # Path to .nc data file. Must be overridden.
-data_path: ???
+data_path: null
 # Path to json stats file. Must be overriden.
 stats_path: ???
 # Names of input channels. Must be overridden.

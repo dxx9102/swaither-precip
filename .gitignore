@@ -79,7 +79,7 @@ ckpts/
 # =========================
 # Data (must be obtained separately)
 # =========================
-data/
+/data
 *.h5
 *.hdf5
 *.nc

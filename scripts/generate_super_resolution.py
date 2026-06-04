@@ -11,6 +11,24 @@
 # Originally based on physicsnemo/examples/generative/corrdiff/generate.py.
 
 import os
+import sys
+
+# Make the swaither/ package importable regardless of where this script is launched from.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# --- Backwards-compatibility alias ---
+# Some pre-existing checkpoints record their model class's import path as
+# `models.X` (the package was named `models` at the repo root before being
+# moved under `swaither/`). PhysicsNeMo's `Module.from_checkpoint` looks up
+# the class by importing that module path; this alias makes such lookups
+# resolve to `swaither.models.X` instead. New checkpoints record the
+# correct path and don't need this alias.
+import swaither.models as _legacy_models_alias
+sys.modules.setdefault("models", _legacy_models_alias)
+
 import contextlib
 from functools import partial
 
@@ -43,9 +61,9 @@ from physicsnemo.utils.corrdiff import (
     diffusion_step,
 )
 
-from helpers.generate_helpers import get_dataset_and_sampler
-from helpers.train_helpers import set_patch_shape
-from datasets.dataset import register_dataset
+from swaither.helpers.generate_helpers import get_dataset_and_sampler
+from swaither.helpers.train_helpers import set_patch_shape
+from swaither.datasets.dataset import register_dataset
 
 import xarray as xr
 
@@ -127,7 +145,7 @@ def apply_time_valves(times: list[str], time_stride: int = 1, max_times: int | N
 
 rng = default_rng()
 
-@hydra.main(version_base="1.2", config_path="conf", config_name="config_generate")
+@hydra.main(version_base="1.2", config_path="../conf", config_name="config_generate")
 def main(cfg: DictConfig) -> None:
     # -----------------------------
     # Distributed

@@ -15,8 +15,26 @@
 # limitations under the License.
 
 import datetime
-from datasets.base import DownscalingDataset
-from datasets.dataset import init_dataset_from_config
+import os
+import sys
+
+# Make `base.py` importable whether this module is loaded as part of the
+# `swaither.helpers` package or via the legacy sys.path mechanism used by
+# physicsnemo's `register_dataset` (which loads dataset files by file path).
+_CURRENT_DIR = os.path.dirname(__file__)
+_DATASETS_DIR = os.path.normpath(os.path.join(_CURRENT_DIR, "..", "datasets"))
+if _DATASETS_DIR not in sys.path:
+    sys.path.insert(0, _DATASETS_DIR)
+
+# Also make the repo root importable so `swaither.datasets.dataset` resolves
+# whether this module is loaded normally or via physicsnemo's file-path loader.
+_REPO_ROOT = os.path.normpath(os.path.join(_CURRENT_DIR, "..", ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from base import DownscalingDataset
+from swaither.datasets.dataset import init_dataset_from_config
+
 from physicsnemo.utils.diffusion import convert_datetime_to_cftime
 
 

@@ -16,12 +16,29 @@ Required user inputs:
 
 from __future__ import annotations
 
-import json
 import os
+import sys
+
+# Make the swaither/ package importable regardless of where this script is launched from.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# --- Backwards-compatibility alias ---
+# Some pre-existing checkpoints record their model class's import path as
+# `models.X` (the package was named `models` at the repo root before being
+# moved under `swaither/`). PhysicsNeMo's `Module.from_checkpoint` looks up
+# the class by importing that module path; this alias makes such lookups
+# resolve to `swaither.models.X` instead. New checkpoints record the
+# correct path and don't need this alias.
+import swaither.models as _legacy_models_alias
+sys.modules.setdefault("models", _legacy_models_alias)
+
 from dataclasses import dataclass, field
 from functools import partial
 from typing import List, Optional, Tuple
-
+import json
 import numpy as np
 import netCDF4 as nc
 import torch

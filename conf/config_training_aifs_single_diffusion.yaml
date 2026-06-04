@@ -57,6 +57,7 @@ training:
         print_progress_freq: 250
         validation_freq: 250
         save_checkpoint_freq: 10000
+        checkpoint_dir: ${hydra:run.dir}
         # Path to the trained regression checkpoint (Step 2 regression).
         # Update this to point to your trained regression checkpoint, or use the
         # download_checkpoints.py helper to fetch the pre-trained one.

@@ -12,7 +12,7 @@
 hydra:
     job:
         chdir: false
-        name: diff_samples_generation
+        name: step2_generation
     run:
         dir: ./outputs/generations/${hydra:job.name}
     searchpath:
