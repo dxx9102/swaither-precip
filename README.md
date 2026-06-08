@@ -2,10 +2,6 @@
   
 # SwAIther-Precip: Lead-Time-Aware Bias Correction Enables Kilometer-Scale Downscaling of Global AI Precipitation Forecasts over Switzerland
 
-<p align="center">
-  <img src="docs/figures/swaither_illustration.png" alt="SwAIther-Precip" width="100%"/>
-</p>
-
 [![arXiv](https://img.shields.io/badge/arXiv-2605.16163-b31b1b.svg)](https://arxiv.org/abs/2605.16163)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%E2%89%A52.0-ee4c2c.svg)](https://pytorch.org/)
@@ -20,6 +16,11 @@ The pipeline consists of:
 
 1. **Step 1 — Lead-time-aware bias correction.** A FiLM-conditioned U-Net that learns a deterministic residual correction on top of the raw AIFS precipitation channel, with the conditioning vector parameterized by forecast lead time.
 2. **Step 2 — Generative super-resolution.** A CorrDiff-style two-component model (deterministic regression U-Net + conditional EDM diffusion U-Net) that generates fine-scale spatial variability on a 1 km grid, conditioned on the bias-corrected Step-1 output.
+
+
+<p align="center">
+  <img src="docs/figures/swaither_illustration.png" alt="SwAIther-Precip" width="100%"/>
+</p>
 
 For a full description of the methodology, evaluation, and results, see the paper: [SwAIther-Precip: Lead-Time-Aware Bias Correction Enables Kilometer-Scale Downscaling of Global AI Precipitation Forecasts over Switzerland](https://arxiv.org/abs/2605.16163).
 
