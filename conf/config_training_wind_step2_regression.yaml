@@ -1,0 +1,78 @@
+hydra:
+  job:
+    chdir: false
+    name: wind_step2_regression
+  run:
+    dir: /data62T/dengxian/swaither-precip/outputs/${hydra:job.name}
+  searchpath:
+    - pkg://conf/base
+
+defaults:
+  - model: regression
+  - model_size: mini
+  - training: ${model}
+  - _self_
+
+task: wind
+
+dataset:
+  type: ./swaither/datasets/wind.py::WindSuperResolutionDataset
+  condition_files:
+    - /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+  high_res_files:
+    - /data62T/dx/uv10/uv10_2019_clipped_HR.nc
+    - /data62T/dx/uv10/uv10_2020_clipped_HR.nc
+    - /data62T/dx/uv10/uv10_2021_clipped_HR.nc
+    - /data62T/dx/uv10/uv10_2022_clipped_HR.nc
+    - /data62T/dx/uv10/uv10_2023_clipped_HR.nc
+    - /data62T/dx/uv10/uv10_2024_clipped_HR.nc
+  static_high_file: /data62T/dx/uv10/fj_HR.nc
+  low_res_variables: [u10, v10]
+  high_res_variables: [u_10m, v_10m]
+  output_variables: [u10, v10]
+  invariant_variables: [elevation, land_sea_mask]
+  stats_path: /data62T/dengxian/swaither-precip/data/stats/wind_step2_2019_2022.json
+  leads: [1, 2, 3, 4, 5, 6]
+  condition_sampling: hybrid
+  crop_mult: 16
+  grid_channels: 4
+  nan_policy: error
+
+model:
+  model_args:
+    N_grid_channels: 4
+    model_grid_channels: 0
+    embedding_type: zero
+
+training:
+  hp:
+    training_duration: 5000000
+    total_batch_size: 8
+    batch_size_per_gpu: 8
+    lr: 2.0e-4
+    lr_rampup: 0
+    split:
+      train_years: [2019, 2020, 2021, 2022]
+      validation_years: [2023]
+      test_years: [2024]
+  perf:
+    fp_optimizations: amp-bf16
+    memory_probe: true
+    dataloader_workers: 0
+    songunet_checkpoint_level: 0
+    torch_compile: false
+  io:
+    print_progress_freq: 100
+    validation_freq: 500
+    validation_steps: 10
+    save_checkpoint_freq: 50000
+    save_n_recent_checkpoints: -1
+    checkpoint_dir: /data62T/dengxian/swaither-precip/outputs/wind_step2_regression
+    tensorboard_dir: /data62T/dengxian/swaither-precip/outputs/tensorboard/wind_step2_regression
+
+wandb:
+  mode: disabled
+  project: swaither-wind-step2-regression
+  entity: ""
+  results_dir: /data62T/dengxian/swaither-precip/outputs/wandb
+  watch_model: false

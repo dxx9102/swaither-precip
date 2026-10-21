@@ -1,0 +1,42 @@
+hydra:
+  job:
+    chdir: false
+    name: wind_corr_diff_inference
+  run:
+    dir: /data62T/dengxian/swaither-precip/outputs/${hydra:job.name}
+
+checkpoints:
+  regression: /data62T/dengxian/swaither-precip/outputs/wind_step2_regression/checkpoints_regression/UNet.0.50000.mdlus
+  diffusion: /data62T/dengxian/swaither-precip/outputs/wind_step2_diffusion/checkpoints_diffusion/EDMPrecondSuperResolution.0.50000.mdlus
+
+outputs:
+  regression_file: /data62T/dengxian/swaither-precip/outputs/wind_corr_diff_inference/wind_regression_2024.nc
+  diffusion_file: /data62T/dengxian/swaither-precip/outputs/wind_corr_diff_inference/wind_diffusion_daily00_2024.nc
+
+dataset:
+  type: ./swaither/datasets/wind.py::WindSuperResolutionDataset
+  condition_files:
+    - /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+  high_res_files:
+    - /data62T/dx/uv10/uv10_2024_clipped_HR.nc
+  static_high_file: /data62T/dx/uv10/fj_HR.nc
+  low_res_variables: [u10, v10]
+  high_res_variables: [u_10m, v_10m]
+  output_variables: [u10, v10]
+  invariant_variables: [elevation, land_sea_mask]
+  stats_path: /data62T/dengxian/swaither-precip/data/stats/wind_step2_2019_2022.json
+  leads: [1, 2, 3, 4, 5, 6]
+  condition_sampling: all
+  crop_mult: 16
+  grid_channels: 4
+  nan_policy: error
+
+inference:
+  mode: all
+  diffusion_leads: [1, 3, 6]
+  diffusion_initial_hour: 0
+  num_ensembles: 12
+  sampler_num_steps: 18
+  sampler_solver: euler
+  seed: 42
+  print_every: 100

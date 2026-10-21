@@ -19,6 +19,12 @@ _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from swaither.wind_helpers import configure_storage
+
+# PhysicsNeMo captures LOCAL_CACHE at import time. Configure every cache and
+# artifact directory before importing it (or matplotlib/cartopy).
+configure_storage()
+
 # --- Backwards-compatibility alias ---
 # Some pre-existing checkpoints record their model class's import path as
 # `models.X` (the package was named `models` at the repo root before being
@@ -78,12 +84,17 @@ from tqdm.auto import tqdm
 # for the custom cmap
 from swaither.helpers.viz_helpers import (
     ColormapConfig,
+    _switzerland_geometry,
 )
 import cartopy.crs as ccrs
-import cartopy.io.shapereader as shpreader
 
 # import the custom bias corrector
-from swaither.models import UNetResidualCorrectorClamped3, UNetResidualCorrectorClampedFiLM
+from swaither.models import (
+    UNetResidualCorrectorClamped3,
+    UNetResidualCorrectorClampedFiLM,
+    WindCorrDiffUNet,
+    WindEDMPrecondSuperResolution,
+)
 
 # and the mass constraints wrappers
 #from swaither.models import EDMPrecondSuperResolutionWithGlobalMass, EDMPrecondSuperResolutionWithGlobalMassScheduled
@@ -105,15 +116,6 @@ if torch.cuda.is_available():
     print(f" torch sees {n} GPU(s):")
     for i in range(n):
         print(f"   · GPU {i}: {torch.cuda.get_device_name(i)}")
-
-# Pre-load the Swiss border geometry once
-shp_fname = shpreader.natural_earth(
-    resolution='50m', category='cultural', name='admin_0_countries'
-)
-reader     = shpreader.Reader(shp_fname)
-switz_geom = next(rec.geometry for rec in reader.records()
-                  if rec.attributes['NAME_LONG'] == "Switzerland")
-# ------ 
 
 torch._dynamo.reset()
 # Increase the cache size limit
@@ -175,7 +177,9 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize loggers
     if dist.rank == 0:
-        writer = SummaryWriter(log_dir="tensorboard")
+        writer = SummaryWriter(
+            log_dir=str(cfg.training.io.get("tensorboard_dir", "outputs/tensorboard"))
+        )
     logger = PythonLogger("main")  # General python logger
     logger0 = RankZeroLoggingWrapper(logger, dist)  # Rank 0 logger
     
@@ -267,8 +271,23 @@ def main(cfg: DictConfig) -> None:
     years = np.array([_get_year(t) for t in times_list], dtype=np.int32)
 
     all_years = np.unique(years)
-    val_years = set(all_years[-2:].tolist()) # last 2 years → val
-    train_years = set(all_years[:-2].tolist())  # everything before → train
+    split_cfg = cfg.training.hp.get("split", {})
+    configured_train_years = split_cfg.get("train_years")
+    configured_val_years = split_cfg.get("validation_years")
+    configured_test_years = split_cfg.get("test_years", [])
+    if configured_train_years is None or configured_val_years is None:
+        val_years = set(all_years[-2:].tolist())
+        train_years = set(all_years[:-2].tolist())
+    else:
+        train_years = set(int(year) for year in configured_train_years)
+        val_years = set(int(year) for year in configured_val_years)
+    if train_years & val_years:
+        raise ValueError(f"Train and validation years overlap: {train_years & val_years}")
+    test_years = set(int(year) for year in configured_test_years)
+    if test_years & (train_years | val_years):
+        raise ValueError(
+            f"Test years overlap train/validation years: {test_years & (train_years | val_years)}"
+        )
     print(f"[INFO] Years in dataset : {all_years.tolist()}")
     print(f"[INFO] Val years        : {sorted(val_years)}  (validation)")
     print(f"[INFO] Training years   : {sorted(train_years)}")
@@ -464,6 +483,18 @@ def main(cfg: DictConfig) -> None:
         model_args["prob_channels"] = prob_channels
     if hasattr(cfg.model, "model_args"):  # override defaults from config file
         model_args.update(OmegaConf.to_container(cfg.model.model_args))
+    physics_model_args = dict(model_args)
+    if cfg.get("task") == "wind":
+        # Wind datasets append coordinates explicitly. The dataset channel count
+        # is therefore kept in N_grid_channels for accounting, while the model
+        # receives model_grid_channels (zero) so PhysicsNeMo does not append a
+        # second set of positional channels.
+        physics_model_args.pop("N_grid_channels", None)
+        if "model_grid_channels" in model_args:
+            physics_model_args["N_grid_channels"] = int(model_args["model_grid_channels"])
+            physics_model_args.pop("model_grid_channels", None)
+        if physics_model_args.get("model_type") == "SongUNet":
+            physics_model_args.pop("gridtype", None)
 
     # ────────────────────────────────────────────────────────────────────────────
     # Sanitize all args to plain Python types so Module.save() can json-dump them:
@@ -498,13 +529,14 @@ def main(cfg: DictConfig) -> None:
         
         model = UNet(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
     elif cfg.model.name == "regression":
-        model = UNet(
+        regression_class = WindCorrDiffUNet if cfg.get("task") == "wind" else UNet
+        model = regression_class(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
 
@@ -513,7 +545,7 @@ def main(cfg: DictConfig) -> None:
             img_in_channels=img_in_channels
             + model_args["N_grid_channels"]
             + model_args["lead_time_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
     elif cfg.model.name == "lt_aware_ce_regression_bias_correction":
@@ -521,7 +553,7 @@ def main(cfg: DictConfig) -> None:
             img_in_channels=img_in_channels
             + model_args["N_grid_channels"]
             + model_args["lead_time_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
     elif cfg.model.name == "lt_aware_FiLM_regression_bias_correction":
@@ -604,22 +636,25 @@ def main(cfg: DictConfig) -> None:
             img_in_channels=img_in_channels
             + model_args["N_grid_channels"]
             + model_args["lead_time_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
         
     elif cfg.model.name == "diffusion":
 
-        model = EDMPrecondSuperResolution(
+        diffusion_class = (
+            WindEDMPrecondSuperResolution if cfg.get("task") == "wind" else EDMPrecondSuperResolution
+        )
+        model = diffusion_class(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
-            **model_args,
+            **physics_model_args,
         )
 
 
     elif cfg.model.name == "patched_diffusion":
         model = EDMPrecondSuperResolution(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
-            **model_args,
+            **physics_model_args,
         )
     else:
         raise ValueError(f"Invalid model: {cfg.model.name}")
@@ -784,7 +819,7 @@ def main(cfg: DictConfig) -> None:
         lr=cfg.training.hp.lr,
         betas=[0.9, 0.999],
         eps=1e-8,
-        fused=True,
+        fused=dist.device.type == "cuda",
     )
 
     # Record the current time to measure the duration of subsequent operations.
@@ -805,6 +840,37 @@ def main(cfg: DictConfig) -> None:
     except Exception:
         cur_nimg = 0
         logger0.info("No previous checkpoint found, starting from scratch.")
+
+    if (
+        cfg.get("task") == "wind"
+        and dist.rank == 0
+        and bool(cfg.training.perf.get("memory_probe", True))
+        and dist.device.type == "cuda"
+    ):
+        img_clean_probe, img_lr_probe, *_ = next(dataset_iterator)
+        img_clean_probe = img_clean_probe.to(dist.device, dtype=torch.float32)
+        img_lr_probe = img_lr_probe.to(dist.device, dtype=torch.float32)
+        optimizer.zero_grad(set_to_none=True)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(dist.device)
+        with torch.autocast("cuda", dtype=amp_dtype, enabled=enable_amp):
+            probe_loss = loss_fn(
+                net=model,
+                img_clean=img_clean_probe,
+                img_lr=img_lr_probe,
+                augment_pipe=None,
+            ).mean()
+        probe_loss.backward()
+        torch.cuda.synchronize(dist.device)
+        logger0.info(
+            "[MEMORY] CorrDiff one-batch probe: allocated=%.2f GiB reserved=%.2f GiB peak=%.2f GiB",
+            torch.cuda.memory_allocated(dist.device) / 1024**3,
+            torch.cuda.memory_reserved(dist.device) / 1024**3,
+            torch.cuda.max_memory_allocated(dist.device) / 1024**3,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        model.train()
+        dataset_iterator = iter(train_loader)
 
 
     # # MY CHANGES --- Epoch / step bookkeeping ---------------------------------
@@ -1441,7 +1507,7 @@ def main(cfg: DictConfig) -> None:
                                     )
                                     # draw CH border
                                     ax.add_geometries(
-                                        [switz_geom],
+                                        [_switzerland_geometry()],
                                         crs=ccrs.PlateCarree(),
                                         facecolor='none',
                                         edgecolor='black',
@@ -1737,7 +1803,7 @@ def main(cfg: DictConfig) -> None:
                                                 )
                                                 # draw CH border
                                                 ax.add_geometries(
-                                                    [switz_geom],
+                                                    [_switzerland_geometry()],
                                                     crs=ccrs.PlateCarree(),
                                                     facecolor='none',
                                                     edgecolor='black',

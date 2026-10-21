@@ -15,6 +15,7 @@
 
 from typing import Iterable, Tuple, Union
 import copy
+import sys
 import torch
 import importlib.util
 from pathlib import Path
@@ -66,11 +67,16 @@ def register_dataset(dataset_spec: str) -> None:
         raise ValueError(f"Dataset file must be a Python file: {file_path}")
 
     # Import the module and get the class
-    spec = importlib.util.spec_from_file_location(file_path.stem, str(file_path))
+    module_name = f"_swaither_dataset_{abs(hash(str(file_path.resolve())))}"
+    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load spec for {file_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Dataclasses resolve postponed annotations through sys.modules while the
+    # module is executing. Register the module before exec for compatibility
+    # with Python 3.12.
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
 
     try:

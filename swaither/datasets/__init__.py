@@ -13,3 +13,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from .wind import (
+    GRID_CHANNEL_NAMES,
+    WindForecastDataset,
+    WindSuperResolutionDataset,
+    load_channel_stats,
+    parse_hourly_times,
+)
+
+__all__ = [
+    "GRID_CHANNEL_NAMES",
+    "WindForecastDataset",
+    "WindSuperResolutionDataset",
+    "load_channel_stats",
+    "parse_hourly_times",
+]

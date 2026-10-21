@@ -1,0 +1,26 @@
+checkpoint: /data62T/dengxian/swaither-precip/outputs/wind_step1_unet/checkpoints/WindForecastUNet.best.mdlus
+output_file: /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+years: [2019, 2020, 2021, 2022, 2023, 2024]
+rollout_hours: 6
+batch_size: 64
+amp: true
+max_initial_times: null
+dataset:
+  type: ./swaither/datasets/wind.py::WindForecastDataset
+  low_res_files:
+    - /data62T/dx/uv10/uv10_2019_2022_clipped_LRes.nc
+    - /data62T/dx/uv10/uv10_2023_clipped_LRes.nc
+    - /data62T/dx/uv10/uv10_2024_clipped_LRes.nc
+  static_low_file: /data62T/dx/uv10/fj_LRes.nc
+  input_variables: [u10, v10]
+  output_variables: [u10, v10]
+  invariant_variables: [elevation, land_sea_mask]
+  stats_path: /data62T/dengxian/swaither-precip/data/stats/wind_step1_2019_2022.json
+  history_hours: 6
+  forecast_horizon_hours: 1
+  years: [2019, 2020, 2021, 2022, 2023, 2024]
+  grid_channels: 4
+  preload_low: true
+  preload_dtype: float16
+  normalize: true
+  nan_policy: error

@@ -48,6 +48,14 @@ wandb>=0.16
 
 # --- Utilities ---
 tqdm>=4.65
+einops>=0.7
+nvtx>=0.2
+termcolor>=2.3
+tensorboard>=2.16
+dask>=2023.1
+
+# --- Testing ---
+pytest>=8.0
 
 # --- Notebook tooling (optional; only needed if running notebooks locally) ---
 jupyter>=1.0

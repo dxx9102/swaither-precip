@@ -25,13 +25,23 @@ import torch
 import cartopy.crs as ccrs
 import cartopy.io.shapereader as shpreader
 
-# Pre-load the Swiss border geometry once
-shp_fname = shpreader.natural_earth(
-    resolution='50m', category='cultural', name='admin_0_countries'
-)
-reader     = shpreader.Reader(shp_fname)
-switz_geom = next(rec.geometry for rec in reader.records()
-                  if rec.attributes['NAME_LONG'] == "Switzerland")
+_switz_geom = None
+
+
+def _switzerland_geometry():
+    """Load the country outline only when a precipitation figure needs it."""
+    global _switz_geom
+    if _switz_geom is None:
+        shp_fname = shpreader.natural_earth(
+            resolution="50m", category="cultural", name="admin_0_countries"
+        )
+        reader = shpreader.Reader(shp_fname)
+        _switz_geom = next(
+            rec.geometry
+            for rec in reader.records()
+            if rec.attributes["NAME_LONG"] == "Switzerland"
+        )
+    return _switz_geom
 
 class ColormapConfig:
     def __init__(self):
@@ -436,7 +446,7 @@ def Viz_DiffSamplesMosaicMultiLead(
             transform=ccrs.PlateCarree(), interpolation="nearest",
         )
         ax.add_geometries(
-            [switz_geom], ccrs.PlateCarree(),
+            [_switzerland_geometry()], ccrs.PlateCarree(),
             facecolor="none", edgecolor="k", linewidth=0.5,
         )
         if title:
@@ -782,7 +792,7 @@ def Viz_AllLeadsOverview(
             transform=ccrs.PlateCarree(), interpolation="nearest",
         )
         ax.add_geometries(
-            [switz_geom], ccrs.PlateCarree(),
+            [_switzerland_geometry()], ccrs.PlateCarree(),
             facecolor="none", edgecolor="k", linewidth=0.5,
         )
         if title:
@@ -1213,7 +1223,7 @@ def Visualize_Pred_onebatch_ByLeadTime3(
                 transform=ccrs.PlateCarree(),
             )
             ax.add_geometries(
-                [switz_geom],
+                [_switzerland_geometry()],
                 crs=ccrs.PlateCarree(),
                 facecolor="none",
                 edgecolor="black",

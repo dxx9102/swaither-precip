@@ -12,6 +12,21 @@
 
 This repository contains the code and configurations for **SwAIther-Precip**, a two-stage downscaling framework that converts coarse-resolution AIFS forecasts into probabilistic km-scale precipitation fields over Switzerland.
 
+## Wind pipeline
+
+The repository also includes an independent hourly 10 m wind workflow. Step 1
+is a deterministic six-hour-history U-Net with one-hour-ahead output and six-step
+autoregressive inference. Step 2 retains the CorrDiff regression U-Net and EDM
+residual diffusion structure while changing the physical fields to signed
+two-channel `u10/v10` wind. Training uses 2019-2022, validation uses 2023, and
+testing uses 2024.
+
+All wind artifacts, checkpoints, conditions, statistics, logs, and caches are
+stored below `/data62T/dengxian/swaither-precip/`. See
+[`docs/wind_pipeline.md`](docs/wind_pipeline.md) for data contracts, commands,
+GPU memory-probe guidance, output dimensions, evaluation, and known limitations.
+The existing precipitation workflow remains available unchanged.
+
 The pipeline consists of:
 
 1. **Step 1 — Lead-time-aware bias correction.** A FiLM-conditioned U-Net that learns a deterministic residual correction on top of the raw AIFS precipitation channel, with the conditioning vector parameterized by forecast lead time.
