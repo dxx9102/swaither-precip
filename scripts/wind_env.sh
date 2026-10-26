@@ -3,7 +3,9 @@
 # entry points, which also call the same storage configuration themselves.
 set -euo pipefail
 
-wind_root=/data62T/dengxian/swaither-precip
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+default_wind_root="$(cd "${script_dir}/.." && pwd)"
+wind_root="${SWAITHER_WIND_ROOT:-${default_wind_root}}"
 wind_cache="${wind_root}/.cache"
 
 export SWAITHER_WIND_ROOT="${wind_root}"

@@ -21,8 +21,9 @@ residual diffusion structure while changing the physical fields to signed
 two-channel `u10/v10` wind. Training uses 2019-2022, validation uses 2023, and
 testing uses 2024.
 
-All wind artifacts, checkpoints, conditions, statistics, logs, and caches are
-stored below `/data62T/dengxian/swaither-precip/`. See
+Wind inputs default to `../../data/uv10/`; override `paths.raw_data_root` in a
+wind config to select another prepared-data directory. Artifacts, checkpoints,
+conditions, statistics, logs, and caches are stored inside the project. See
 [`docs/wind_pipeline.md`](docs/wind_pipeline.md) for data contracts, commands,
 GPU memory-probe guidance, output dimensions, evaluation, and known limitations.
 The existing precipitation workflow remains available unchanged.

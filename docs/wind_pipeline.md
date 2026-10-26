@@ -23,23 +23,24 @@ Year splits are `2019-2022` train, `2023` validation, and `2024` test. Robust
 
 ## Environment and storage
 
-The prepared Python environment is:
-
-```text
-/data62T/dengxian/envs/swaither-precip/bin/python
-```
+The project uses the Anaconda environment `swaither-precip`.
 
 Before launching, source the storage setup:
 
 ```bash
-cd /data62T/dengxian/swaither-precip
+module load anaconda3/2023.09
+eval "$(conda shell.bash hook)"
+conda activate swaither-precip
+cd /path/to/swaither-precip
 source scripts/wind_env.sh
 ```
 
 The Python entry points also call `configure_storage()`. Checkpoints, statistics,
 conditions, inference output, TensorBoard/W&B data, and caches are placed below
-`/data62T/dengxian/swaither-precip/`. Raw data under `/data62T/dx/uv10/` is read
-only.
+the project root. Prepared wind data defaults to `../../data/uv10/` and is read
+only. The data directory is configured by `paths.raw_data_root` in every wind
+YAML file; for example, override it at launch with
+`paths.raw_data_root=/path/to/uv10`.
 
 Verify GPU availability before production training:
 
@@ -154,7 +155,7 @@ spread-skill, and radial spectra:
 ```bash
 python scripts/evaluate_wind.py \
   --forecast outputs/wind_corr_diff_inference/wind_regression_2024.nc \
-  --truth /data62T/dx/uv10/uv10_2024_clipped_HR.nc \
+  --truth ../../data/uv10/uv10_2024_clipped_HR.nc \
   --truth-u u_10m --truth-v v_10m \
   --ensemble outputs/wind_corr_diff_inference/wind_diffusion_daily00_2024.nc \
   --low-condition data/wind_generated/step1_conditions_2019_2024.nc \

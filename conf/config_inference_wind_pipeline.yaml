@@ -3,28 +3,34 @@ hydra:
     chdir: false
     name: wind_corr_diff_inference
   run:
-    dir: /data62T/dengxian/swaither-precip/outputs/${hydra:job.name}
+    dir: ${paths.outputs}/${hydra:job.name}
+
+paths:
+  raw_data_root: ../../data/uv10
+  outputs: outputs
+  wind_generated: data/wind_generated
+  stats: data/stats
 
 checkpoints:
-  regression: /data62T/dengxian/swaither-precip/outputs/wind_step2_regression/checkpoints_regression/UNet.0.50000.mdlus
-  diffusion: /data62T/dengxian/swaither-precip/outputs/wind_step2_diffusion/checkpoints_diffusion/EDMPrecondSuperResolution.0.50000.mdlus
+  regression: ${paths.outputs}/wind_step2_regression/checkpoints_regression/UNet.0.50000.mdlus
+  diffusion: ${paths.outputs}/wind_step2_diffusion/checkpoints_diffusion/EDMPrecondSuperResolution.0.50000.mdlus
 
 outputs:
-  regression_file: /data62T/dengxian/swaither-precip/outputs/wind_corr_diff_inference/wind_regression_2024.nc
-  diffusion_file: /data62T/dengxian/swaither-precip/outputs/wind_corr_diff_inference/wind_diffusion_daily00_2024.nc
+  regression_file: ${paths.outputs}/wind_corr_diff_inference/wind_regression_2024.nc
+  diffusion_file: ${paths.outputs}/wind_corr_diff_inference/wind_diffusion_daily00_2024.nc
 
 dataset:
   type: ./swaither/datasets/wind.py::WindSuperResolutionDataset
   condition_files:
-    - /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+    - ${paths.wind_generated}/step1_conditions_2019_2024.nc
   high_res_files:
-    - /data62T/dx/uv10/uv10_2024_clipped_HR.nc
-  static_high_file: /data62T/dx/uv10/fj_HR.nc
+    - ${paths.raw_data_root}/uv10_2024_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
   low_res_variables: [u10, v10]
   high_res_variables: [u_10m, v_10m]
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
-  stats_path: /data62T/dengxian/swaither-precip/data/stats/wind_step2_2019_2022.json
+  stats_path: ${paths.stats}/wind_step2_2019_2022.json
   leads: [1, 2, 3, 4, 5, 6]
   condition_sampling: all
   crop_mult: 16

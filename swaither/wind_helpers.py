@@ -16,15 +16,13 @@ DEFAULT_STORAGE_ROOT = REPO_ROOT
 
 
 def configure_storage(root: Optional[Path] = None) -> Dict[str, Path]:
-    """Create and return wind-pipeline storage paths outside the home directory.
+    """Create and return wind-pipeline artifact and cache paths.
 
-    Environment variables are intentionally set only when absent so callers can
-    select a different directory below ``/data62T/dengxian`` when needed.
+    Environment variables are set for the process before libraries that capture
+    cache locations are imported. Callers can select a different storage root
+    through ``root`` or ``SWAITHER_WIND_ROOT``.
     """
     storage = Path(root or os.environ.get("SWAITHER_WIND_ROOT", DEFAULT_STORAGE_ROOT)).resolve()
-    allowed = Path("/data62T/dengxian")
-    if storage != allowed and allowed not in storage.parents:
-        raise ValueError(f"Wind artifacts must stay below {allowed}, got {storage}")
     paths = {
         "root": storage,
         "outputs": storage / "outputs",

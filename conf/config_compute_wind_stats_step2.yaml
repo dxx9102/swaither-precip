@@ -1,20 +1,29 @@
+hydra:
+  job:
+    chdir: false
+
+paths:
+  raw_data_root: ../../data/uv10
+  wind_generated: data/wind_generated
+  stats: data/stats
+
 mode: step2
 max_samples: 4096
 values_per_channel: 1000000
 quantile_low: 0.005
 quantile_high: 0.995
 train_years: [2019, 2020, 2021, 2022]
-output_file: /data62T/dengxian/swaither-precip/data/stats/wind_step2_2019_2022.json
+output_file: ${paths.stats}/wind_step2_2019_2022.json
 dataset:
   type: ./swaither/datasets/wind.py::WindSuperResolutionDataset
   condition_files:
-    - /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+    - ${paths.wind_generated}/step1_conditions_2019_2024.nc
   high_res_files:
-    - /data62T/dx/uv10/uv10_2019_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2020_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2021_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2022_clipped_HR.nc
-  static_high_file: /data62T/dx/uv10/fj_HR.nc
+    - ${paths.raw_data_root}/uv10_2019_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2020_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2021_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2022_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
   low_res_variables: [u10, v10]
   high_res_variables: [u_10m, v_10m]
   output_variables: [u10, v10]

@@ -3,7 +3,7 @@ hydra:
     chdir: false
     name: wind_step2_regression
   run:
-    dir: /data62T/dengxian/swaither-precip/outputs/${hydra:job.name}
+    dir: ${paths.outputs}/${hydra:job.name}
   searchpath:
     - pkg://conf/base
 
@@ -13,25 +13,31 @@ defaults:
   - training: ${model}
   - _self_
 
+paths:
+  raw_data_root: ../../data/uv10
+  outputs: outputs
+  wind_generated: data/wind_generated
+  stats: data/stats
+
 task: wind
 
 dataset:
   type: ./swaither/datasets/wind.py::WindSuperResolutionDataset
   condition_files:
-    - /data62T/dengxian/swaither-precip/data/wind_generated/step1_conditions_2019_2024.nc
+    - ${paths.wind_generated}/step1_conditions_2019_2024.nc
   high_res_files:
-    - /data62T/dx/uv10/uv10_2019_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2020_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2021_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2022_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2023_clipped_HR.nc
-    - /data62T/dx/uv10/uv10_2024_clipped_HR.nc
-  static_high_file: /data62T/dx/uv10/fj_HR.nc
+    - ${paths.raw_data_root}/uv10_2019_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2020_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2021_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2022_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2023_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2024_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
   low_res_variables: [u10, v10]
   high_res_variables: [u_10m, v_10m]
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
-  stats_path: /data62T/dengxian/swaither-precip/data/stats/wind_step2_2019_2022.json
+  stats_path: ${paths.stats}/wind_step2_2019_2022.json
   leads: [1, 2, 3, 4, 5, 6]
   condition_sampling: hybrid
   crop_mult: 16
@@ -67,12 +73,12 @@ training:
     validation_steps: 10
     save_checkpoint_freq: 50000
     save_n_recent_checkpoints: -1
-    checkpoint_dir: /data62T/dengxian/swaither-precip/outputs/wind_step2_regression
-    tensorboard_dir: /data62T/dengxian/swaither-precip/outputs/tensorboard/wind_step2_regression
+    checkpoint_dir: ${paths.outputs}/wind_step2_regression
+    tensorboard_dir: ${paths.outputs}/tensorboard/wind_step2_regression
 
 wandb:
   mode: disabled
   project: swaither-wind-step2-regression
   entity: ""
-  results_dir: /data62T/dengxian/swaither-precip/outputs/wandb
+  results_dir: ${paths.outputs}/wandb
   watch_model: false

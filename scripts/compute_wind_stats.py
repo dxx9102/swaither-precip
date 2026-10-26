@@ -115,8 +115,6 @@ def main(cfg: DictConfig) -> None:
         },
     }
     destination = Path(cfg.output_file)
-    if Path("/data62T/dengxian") not in destination.resolve().parents and destination.resolve() != Path("/data62T/dengxian"):
-        raise ValueError(f"Stats must be saved below /data62T/dengxian, got {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
