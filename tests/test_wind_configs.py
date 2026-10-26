@@ -31,6 +31,18 @@ def test_wind_year_splits_and_storage_paths():
     _assert_below(step1.training.run_dir, REPO)
     _assert_below(step1.training.checkpoint_dir, REPO)
     assert step1.dataset.history_hours == 6
+    assert step1.dataset.forecast_horizon_hours == 72
+    assert step1.validation.dataset.forecast_horizon_hours == 72
+    assert "_72h" in str(step1.dataset.stats_path)
+    assert "_72h" in str(step1.training.run_dir)
+
+    step1_stats = OmegaConf.load(REPO / "conf/config_compute_wind_stats.yaml")
+    assert step1_stats.dataset.forecast_horizon_hours == 72
+    assert "_72h" in str(step1_stats.output_file)
+
+    step1_export = OmegaConf.load(REPO / "conf/config_export_wind_forecasts.yaml")
+    assert step1_export.forecast_hours == 72
+    assert step1_export.dataset.forecast_horizon_hours == 72
 
     for name in (
         "config_training_wind_step2_regression.yaml",

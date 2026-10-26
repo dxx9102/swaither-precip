@@ -15,8 +15,9 @@ This repository contains the code and configurations for **SwAIther-Precip**, a 
 ## Wind pipeline
 
 The repository also includes an independent hourly 10 m wind workflow. Step 1
-is a deterministic six-hour-history U-Net with one-hour-ahead output and six-step
-autoregressive inference. Step 2 retains the CorrDiff regression U-Net and EDM
+is a deterministic six-hour-history U-Net that predicts normalized persistence
+residuals for all 72 lead hours in one forward pass. Step 2 retains the
+CorrDiff regression U-Net and EDM
 residual diffusion structure while changing the physical fields to signed
 two-channel `u10/v10` wind. Training uses 2019-2022, validation uses 2023, and
 testing uses 2024.

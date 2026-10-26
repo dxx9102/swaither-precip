@@ -362,10 +362,18 @@ class WindForecastDataset(DownscalingDataset):
     """Causal low-resolution wind forecasting dataset.
 
     Each item uses observations at ``t-history_hours+1 ... t`` and predicts the
-    wind components at ``t+1``.  Samples never cross a calendar-year boundary.
+    normalized persistence residual for every hour in ``t+1 ...
+    t+forecast_horizon_hours``. Samples never cross a calendar-year boundary.
     ``input_channels()`` reports physical channels; coordinate embedding
     channels are appended to the returned tensor and counted separately
     through :attr:`grid_channels`.
+
+    Outputs are flattened in lead-major order::
+
+        [h1_u, h1_v, h2_u, h2_v, ..., hH_u, hH_v]
+
+    where ``H`` is :attr:`forecast_horizon_hours`. The residual is computed in
+    normalized space relative to the final history observation at ``t``.
     """
 
     def __init__(
@@ -377,7 +385,7 @@ class WindForecastDataset(DownscalingDataset):
         invariant_variables: Sequence[str] = ("elevation", "land_sea_mask"),
         stats_path: Optional[PathLike] = None,
         history_hours: int = 6,
-        forecast_horizon_hours: int = 1,
+        forecast_horizon_hours: int = 72,
         years: Optional[Sequence[int]] = None,
         grid_channels: int = 4,
         preload_low: bool = True,
@@ -389,8 +397,8 @@ class WindForecastDataset(DownscalingDataset):
         super().__init__()
         if history_hours < 1:
             raise ValueError("history_hours must be >= 1")
-        if forecast_horizon_hours != 1:
-            raise ValueError("This dataset is intentionally one-hour-ahead only")
+        if forecast_horizon_hours < 1:
+            raise ValueError("forecast_horizon_hours must be >= 1")
         if grid_channels not in (0, 4):
             raise ValueError("grid_channels must be 0 or 4")
         if preload_dtype not in ("float16", "float32"):
@@ -432,20 +440,20 @@ class WindForecastDataset(DownscalingDataset):
         )
 
         selected_years = set(int(year) for year in years) if years is not None else None
-        self.samples: List[Tuple[Tuple[int, ...], int, pd.Timestamp]] = []
+        self.samples: List[Tuple[Tuple[int, ...], Tuple[int, ...]]] = []
         times = self.low_index.times
         for current in range(self.history_hours - 1, len(times) - self.forecast_horizon_hours):
             history = tuple(range(current - self.history_hours + 1, current + 1))
-            target = current + self.forecast_horizon_hours
-            valid_time = times[target]
-            if selected_years is not None and valid_time.year not in selected_years:
+            targets = tuple(range(current + 1, current + self.forecast_horizon_hours + 1))
+            initial_time = times[current]
+            if selected_years is not None and initial_time.year not in selected_years:
                 continue
-            chain = [times[pos] for pos in (*history, target)]
+            chain = [times[pos] for pos in (*history, *targets)]
             if len({timestamp.year for timestamp in chain}) != 1:
                 continue
             if any((chain[i + 1] - chain[i]) != pd.Timedelta(hours=1) for i in range(len(chain) - 1)):
                 continue
-            self.samples.append((history, target, valid_time))
+            self.samples.append((history, targets))
         if not self.samples:
             raise ValueError("No causal wind samples remain after the year and hourly checks")
 
@@ -497,15 +505,16 @@ class WindForecastDataset(DownscalingDataset):
         return [ChannelMetadata(name=name) for name in self.output_variables]
 
     def time(self) -> List[pd.Timestamp]:
-        return [pd.Timestamp(sample[2]) for sample in self.samples]
+        return [pd.Timestamp(self.low_index.times[sample[0][-1]]) for sample in self.samples]
 
     def sample_metadata(self, index: int) -> Dict[str, Any]:
-        history, target, valid_time = self.samples[index]
+        history, targets = self.samples[index]
         return {
             "history_times": [self.low_index.times[pos] for pos in history],
             "initial_time": self.low_index.times[history[-1]],
-            "target_time": valid_time,
-            "target_position": target,
+            "target_times": [self.low_index.times[pos] for pos in targets],
+            "target_positions": list(targets),
+            "lead_hours": list(range(1, self.forecast_horizon_hours + 1)),
         }
 
     def read_physical_times(self, positions: Sequence[int]) -> np.ndarray:
@@ -526,6 +535,90 @@ class WindForecastDataset(DownscalingDataset):
         if self.grid_channels:
             x = np.concatenate([x, self.grid], axis=0)
         return x
+
+    def read_physical_targets(self, index: int) -> np.ndarray:
+        """Read absolute physical targets for one forecast sample."""
+        _, targets = self.samples[index]
+        values = self.read_physical_times(targets)
+        return _sanitize(values, self.nan_policy, "forecast target")
+
+    def residual_target(
+        self,
+        target_fields: np.ndarray,
+        history_fields: np.ndarray,
+    ) -> np.ndarray:
+        """Return flattened normalized residuals relative to the latest history."""
+        targets = np.asarray(target_fields, dtype=np.float32)
+        history = np.asarray(history_fields, dtype=np.float32)
+        expected_targets = (
+            self.forecast_horizon_hours,
+            len(self.output_variables),
+            len(self._lat),
+            len(self._lon),
+        )
+        expected_history = (
+            self.history_hours,
+            len(self.input_variables),
+            len(self._lat),
+            len(self._lon),
+        )
+        if targets.shape != expected_targets:
+            raise ValueError(f"Expected target fields {expected_targets}, got {targets.shape}")
+        if history.shape != expected_history:
+            raise ValueError(f"Expected history fields {expected_history}, got {history.shape}")
+
+        normalized_targets = self.normalize_output(targets)
+        normalized_anchor = self.normalize_output(history[-1])
+        residual = normalized_targets - normalized_anchor[None, ...]
+        return residual.reshape(-1, *self.image_shape())
+
+    def absolute_output_from_prediction(
+        self,
+        prediction: np.ndarray,
+        normalized_input: np.ndarray,
+    ) -> np.ndarray:
+        """Convert flattened normalized residuals to absolute wind fields.
+
+        The returned shape is ``(..., forecast_horizon_hours, 2, H, W)``.
+        """
+        residuals = np.asarray(prediction, dtype=np.float32)
+        inputs = np.asarray(normalized_input, dtype=np.float32)
+        channels = self.forecast_horizon_hours * len(self.output_variables)
+        if residuals.shape[-3] != channels:
+            raise ValueError(
+                f"Expected {channels} residual channels, got {residuals.shape[-3]}"
+            )
+        if inputs.shape[-3] != len(self.physical_input_names) + self.grid_channels:
+            raise ValueError(
+                f"Expected {len(self.physical_input_names) + self.grid_channels} input "
+                f"channels, got {inputs.shape[-3]}"
+            )
+
+        leading_shape = residuals.shape[:-3]
+        residual_fields = residuals.reshape(
+            *leading_shape,
+            self.forecast_horizon_hours,
+            len(self.output_variables),
+            *self.image_shape(),
+        )
+        anchor_channel = (self.history_hours - 1) * len(self.input_variables)
+        anchor = inputs[..., anchor_channel : anchor_channel + len(self.output_variables), :, :]
+        absolute_normalized = residual_fields + anchor[..., None, :, :, :]
+        return self.denormalize_output(absolute_normalized)
+
+    def _output_stats_for_channels(self, channels: int) -> Tuple[np.ndarray, np.ndarray]:
+        output_channels = len(self.output_variables)
+        if channels == output_channels:
+            return self.output_min, self.output_max
+        if channels == output_channels * self.forecast_horizon_hours:
+            return (
+                np.tile(self.output_min, self.forecast_horizon_hours),
+                np.tile(self.output_max, self.forecast_horizon_hours),
+            )
+        raise ValueError(
+            f"Output channel dimension must be {output_channels} or "
+            f"{output_channels * self.forecast_horizon_hours}, got {channels}"
+        )
 
     def normalize_input(self, x: np.ndarray) -> np.ndarray:
         if not self.normalize:
@@ -576,19 +669,36 @@ class WindForecastDataset(DownscalingDataset):
     def normalize_output(self, y: np.ndarray) -> np.ndarray:
         if not self.normalize:
             return np.asarray(y, dtype=np.float32)
-        return (np.asarray(y, dtype=np.float32) - self.output_min[:, None, None]) / (self.output_max - self.output_min)[:, None, None]
+        values = np.asarray(y, dtype=np.float32)
+        if values.ndim < 3:
+            raise ValueError(
+                "Expected output shape (..., channels, height, width), "
+                f"got {values.shape}"
+            )
+        low, high = self._output_stats_for_channels(values.shape[-3])
+        stats_shape = (1,) * (values.ndim - 3) + (low.size, 1, 1)
+        return (values - low.reshape(stats_shape)) / (high - low).reshape(stats_shape)
 
     def denormalize_output(self, y: np.ndarray) -> np.ndarray:
         if not self.normalize:
             return np.asarray(y, dtype=np.float32)
-        return np.asarray(y, dtype=np.float32) * (self.output_max - self.output_min)[:, None, None] + self.output_min[:, None, None]
+        values = np.asarray(y, dtype=np.float32)
+        if values.ndim < 3:
+            raise ValueError(
+                "Expected output shape (..., channels, height, width), "
+                f"got {values.shape}"
+            )
+        low, high = self._output_stats_for_channels(values.shape[-3])
+        stats_shape = (1,) * (values.ndim - 3) + (low.size, 1, 1)
+        return values * (high - low).reshape(stats_shape) + low.reshape(stats_shape)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        history, target, _valid_time = self.samples[index]
-        x_phys = self.build_input_from_history(self.read_physical_times(history))
-        y_phys = _sanitize(self.read_physical_times((target,))[0], self.nan_policy, "forecast target")
+        history, _targets = self.samples[index]
+        history_fields = self.read_physical_times(history)
+        x_phys = self.build_input_from_history(history_fields)
+        y_phys = self.read_physical_targets(index)
         x = self.normalize_input(x_phys)
-        y = self.normalize_output(y_phys)
+        y = self.residual_target(y_phys, history_fields)
         return torch.from_numpy(y.copy()).float(), torch.from_numpy(x.copy()).float()
 
 

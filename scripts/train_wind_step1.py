@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the deterministic 6-hour-history, one-hour-ahead wind U-Net."""
+"""Train the deterministic 6-hour-history, 72-hour wind residual U-Net."""
 
 from __future__ import annotations
 
@@ -66,7 +66,8 @@ def _model(
     )
     return WindForecastUNet(
         img_in_channels=len(dataset.input_channels()) + dataset.grid_channels,
-        img_out_channels=2,
+        forecast_hours=dataset.forecast_horizon_hours,
+        wind_components=len(dataset.output_channels()),
         unet_kwargs=unet_kwargs,
     )
 
@@ -77,11 +78,24 @@ def _validation(
     device: torch.device,
     dataset: WindForecastDataset,
     amp: bool,
-) -> Tuple[float, Dict[str, float]]:
+) -> Tuple[float, Dict[str, float], Dict[str, Dict[str, float]]]:
     model.eval()
-    losses = []
-    prediction = []
-    truth = []
+    metric_sums: Dict[str, Tuple[float, int]] = {}
+    per_lead_sums: Dict[str, Dict[str, Tuple[float, int]]] = {
+        str(lead): {} for lead in range(1, dataset.forecast_horizon_hours + 1)
+    }
+    residual_squared_sum = 0.0
+    residual_count = 0
+
+    def add_metrics(
+        destination: Dict[str, Tuple[float, int]],
+        metrics: Dict[str, float],
+        weight: int,
+    ) -> None:
+        for name, value in metrics.items():
+            previous_sum, previous_weight = destination.get(name, (0.0, 0))
+            destination[name] = (previous_sum + value * weight, previous_weight + weight)
+
     with torch.no_grad():
         for y, x in loader:
             y = y.to(device, non_blocking=True)
@@ -89,14 +103,61 @@ def _validation(
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
                 pred = model(torch.zeros_like(y), x)
                 loss = torch.mean((pred.float() - y.float()) ** 2)
-            losses.append(float(loss.detach().cpu()))
-            prediction.append(pred.float().cpu())
-            truth.append(y.float().cpu())
-    pred_np = dataset.denormalize_output(torch.cat(prediction).numpy())
-    truth_np = dataset.denormalize_output(torch.cat(truth).numpy())
-    return float(np.mean(losses)), wind_metrics(
-        pred_np[:, 0], pred_np[:, 1], truth_np[:, 0], truth_np[:, 1]
-    )
+            residual_squared_sum += float(loss.detach().cpu()) * y.numel()
+            residual_count += y.numel()
+
+            normalized_prediction = pred.float().cpu().numpy()
+            normalized_truth = y.float().cpu().numpy()
+            normalized_input = x.float().cpu().numpy()
+            pred_np = dataset.absolute_output_from_prediction(
+                normalized_prediction, normalized_input
+            )
+            truth_np = dataset.absolute_output_from_prediction(
+                normalized_truth, normalized_input
+            )
+            overall = wind_metrics(
+                pred_np[:, :, 0],
+                pred_np[:, :, 1],
+                truth_np[:, :, 0],
+                truth_np[:, :, 1],
+            )
+            metric_weight = int(pred_np[:, :, 0].size)
+            add_metrics(metric_sums, overall, metric_weight)
+
+            for lead_index, lead_hour in enumerate(
+                range(1, dataset.forecast_horizon_hours + 1)
+            ):
+                lead_metrics = wind_metrics(
+                    pred_np[:, lead_index, 0],
+                    pred_np[:, lead_index, 1],
+                    truth_np[:, lead_index, 0],
+                    truth_np[:, lead_index, 1],
+                )
+                lead_residual = (
+                    normalized_prediction[:, lead_index]
+                    - normalized_truth[:, lead_index]
+                )
+                lead_metrics["normalized_residual_mse"] = float(
+                    np.mean(lead_residual**2)
+                )
+                add_metrics(
+                    per_lead_sums[str(lead_hour)],
+                    lead_metrics,
+                    int(lead_residual.size),
+                )
+
+    overall_metrics = {
+        name: total / max(weight, 1) for name, (total, weight) in metric_sums.items()
+    }
+    per_lead = {
+        lead: {
+            name: total / max(weight, 1)
+            for name, (total, weight) in lead_metrics.items()
+        }
+        for lead, lead_metrics in per_lead_sums.items()
+    }
+    validation_loss = residual_squared_sum / max(residual_count, 1)
+    return validation_loss, overall_metrics, per_lead
 
 
 def _probe_cuda_memory(
@@ -210,8 +271,8 @@ def main(cfg: DictConfig) -> None:
     for epoch in range(start_epoch, int(cfg.training.epochs)):
         model.train()
         started = time.time()
-        running = 0.0
-        count = 0
+        running_squared_error = 0.0
+        trained_values = 0
         for y, x in train_loader:
             y = y.to(device, non_blocking=True)
             x = x.to(device, non_blocking=True)
@@ -223,15 +284,22 @@ def main(cfg: DictConfig) -> None:
             if cfg.training.get("grad_clip") is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg.training.grad_clip))
             optimizer.step()
-            running += float(loss.detach().cpu())
-            count += 1
-        train_loss = running / max(count, 1)
-        val_loss, metrics = _validation(model, val_loader, device, validation_dataset, amp)
+            running_squared_error += float(loss.detach().cpu()) * y.numel()
+            trained_values += y.numel()
+        train_loss = running_squared_error / max(trained_values, 1)
+        val_loss, metrics, per_lead_metrics = _validation(
+            model, val_loader, device, validation_dataset, amp
+        )
         scheduler.step(val_loss)
         writer.add_scalar("train/mse", train_loss, epoch)
         writer.add_scalar("validation/mse", val_loss, epoch)
         for name, value in metrics.items():
             writer.add_scalar(f"validation/{name}", value, epoch)
+        for lead_hour, lead_metrics in per_lead_metrics.items():
+            for name, value in lead_metrics.items():
+                writer.add_scalar(
+                    f"validation/lead_{int(lead_hour):02d}/{name}", value, epoch
+                )
         print(
             f"epoch={epoch + 1}/{cfg.training.epochs} train_mse={train_loss:.6f} "
             f"val_mse={val_loss:.6f} vector_rmse={metrics['vector_rmse']:.4f} "
@@ -244,7 +312,16 @@ def main(cfg: DictConfig) -> None:
             best_path = checkpoint_dir / "WindForecastUNet.best.mdlus"
             model.save(str(best_path))
             with metrics_path.open("w", encoding="utf-8") as handle:
-                json.dump({"epoch": epoch + 1, "val_mse": val_loss, **metrics}, handle, indent=2)
+                json.dump(
+                    {
+                        "epoch": epoch + 1,
+                        "val_mse": val_loss,
+                        **metrics,
+                        "per_lead": per_lead_metrics,
+                    },
+                    handle,
+                    indent=2,
+                )
         else:
             epochs_without_improvement += 1
         torch.save(

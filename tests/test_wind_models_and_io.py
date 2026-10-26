@@ -36,11 +36,12 @@ from .test_wind_data import (
 )
 
 
-def _tiny_forecast_model() -> WindForecastUNet:
+def _tiny_forecast_model(forecast_hours: int = 1) -> WindForecastUNet:
     return WindForecastUNet(
         18,
-        2,
-        {
+        forecast_hours=forecast_hours,
+        wind_components=2,
+        unet_kwargs={
             "model_channels": 8,
             "channel_mult": [1, 2, 2],
             "attn_resolutions": [],
@@ -59,12 +60,36 @@ def test_forecast_forward_backward_and_checkpoint_roundtrip(tmp_path):
     target = torch.randn(2, 2, 29, 33)
     prediction = model(torch.zeros_like(target), x)
     assert prediction.shape == target.shape
+    assert model.img_out_channels == 2
+    assert model.__model_checkpoint_version__ == 2
     torch.mean((prediction - target) ** 2).backward()
     assert any(parameter.grad is not None for parameter in model.parameters())
 
     checkpoint = tmp_path / "wind_unet.mdlus"
     model.save(str(checkpoint))
     restored = Module.from_checkpoint(str(checkpoint), {}).eval()
+    with torch.no_grad():
+        np.testing.assert_allclose(
+            restored(torch.zeros_like(target), x).numpy(),
+            model.eval()(torch.zeros_like(target), x).detach().numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+def test_72_hour_forecast_forward_and_checkpoint_roundtrip(tmp_path):
+    model = _tiny_forecast_model(forecast_hours=72)
+    x = torch.randn(2, 18, 29, 33)
+    target = torch.randn(2, 144, 29, 33)
+    prediction = model(torch.zeros_like(target), x)
+    assert prediction.shape == target.shape
+    assert model.img_out_channels == 144
+    torch.mean((prediction - target) ** 2).backward()
+
+    checkpoint = tmp_path / "wind_unet_72h.mdlus"
+    model.save(str(checkpoint))
+    restored = Module.from_checkpoint(str(checkpoint), {}).eval()
+    assert restored.forecast_hours == 72
     with torch.no_grad():
         np.testing.assert_allclose(
             restored(torch.zeros_like(target), x).numpy(),
@@ -132,15 +157,69 @@ def _load_export_module():
     return module
 
 
-def test_autoregressive_rollout_conditioning_and_end_to_end_shapes(tmp_path):
+def _load_training_module():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "train_wind_step1.py"
+    spec = importlib.util.spec_from_file_location("wind_train_step1", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_validation_reports_absolute_metrics_for_every_lead(tmp_path):
+    from torch.utils.data import DataLoader
+
+    from swaither.datasets.wind import WindForecastDataset
+
+    lat = _grid(3, 1.0)
+    lon = _grid(4, 1.0)
+    times = pd.date_range("2020-01-01", periods=78, freq="h")
+    low = tmp_path / "validation_low.nc"
+    static = tmp_path / "validation_static.nc"
+    stats = tmp_path / "validation_stats.json"
+    _write_low(low, times, lat, lon)
+    _write_static(static, lat, lon)
+    probe = WindForecastDataset(
+        low,
+        static,
+        forecast_horizon_hours=72,
+        years=[2020],
+        normalize=False,
+    )
+    _stats(stats, probe.physical_input_names, probe.output_variables)
+    dataset = WindForecastDataset(
+        low,
+        static,
+        forecast_horizon_hours=72,
+        years=[2020],
+        stats_path=stats,
+    )
+    loader = DataLoader(dataset, batch_size=1)
+    training = _load_training_module()
+    loss, overall, per_lead = training._validation(
+        _tiny_forecast_model(forecast_hours=72).eval(),
+        loader,
+        torch.device("cpu"),
+        dataset,
+        amp=False,
+    )
+
+    assert loss >= 0
+    assert "vector_rmse" in overall
+    assert list(per_lead) == [str(lead) for lead in range(1, 73)]
+    assert all("vector_rmse" in metrics for metrics in per_lead.values())
+    assert all("normalized_residual_mse" in metrics for metrics in per_lead.values())
+
+
+def test_one_shot_72_hour_conditioning_and_end_to_end_shapes(tmp_path):
     from swaither.datasets.wind import WindForecastDataset, WindSuperResolutionDataset
 
     low_lat = _grid(3, 1.0)
     low_lon = _grid(4, 1.0)
     high_lat = _grid(17, 1.0)
     high_lon = _grid(17, 1.0)
-    low_times = pd.date_range("2020-01-01", periods=13, freq="h")
-    high_times = pd.date_range("2020-01-01", periods=18, freq="h")
+    low_times = pd.date_range("2020-01-01", periods=78, freq="h")
+    high_times = pd.date_range("2020-01-01", periods=100, freq="h")
     low = tmp_path / "low.nc"
     static_low = tmp_path / "static_low.nc"
     high = tmp_path / "high.nc"
@@ -152,7 +231,11 @@ def test_autoregressive_rollout_conditioning_and_end_to_end_shapes(tmp_path):
     _write_static(static_high, high_lat, high_lon)
 
     forecast_probe = WindForecastDataset(
-        low, static_low, years=[2020], normalize=False
+        low,
+        static_low,
+        forecast_horizon_hours=72,
+        years=[2020],
+        normalize=False,
     )
     forecast_stats = tmp_path / "forecast_stats.json"
     _stats(
@@ -163,26 +246,35 @@ def test_autoregressive_rollout_conditioning_and_end_to_end_shapes(tmp_path):
     forecast_data = WindForecastDataset(
         low,
         static_low,
+        forecast_horizon_hours=72,
         years=[2020],
         stats_path=forecast_stats,
     )
     export = _load_export_module()
-    u, v, initial_times = export.rollout(
-        _tiny_forecast_model().eval(),
+    model = _tiny_forecast_model(forecast_hours=72).eval()
+    forward_calls = 0
+
+    def count_forward(_module, _inputs, _output):
+        nonlocal forward_calls
+        forward_calls += 1
+
+    model.register_forward_hook(count_forward)
+    u, v, initial_times = export.forecast(
+        model,
         forecast_data,
-        [5, 6],
-        max_lead=6,
+        [5, 6, 7],
         batch_size=2,
         device=torch.device("cpu"),
         amp=False,
     )
-    assert u.shape == v.shape == (2, 6, 3, 4)
+    assert forward_calls == 2
+    assert u.shape == v.shape == (3, 72, 3, 4)
     write_forecast_netcdf(
         condition,
         u,
         v,
         initial_times,
-        [1, 2, 3, 4, 5, 6],
+        list(range(1, 73)),
         forecast_data.latitude(),
         forecast_data.longitude(),
     )
@@ -190,6 +282,10 @@ def test_autoregressive_rollout_conditioning_and_end_to_end_shapes(tmp_path):
         assert ds.u10.dims == ("initial_time", "lead_hour", "lat", "lon")
         assert ds.u10.units == "m s-1"
         assert ds.valid_time.dims == ("initial_time", "lead_hour")
+        assert ds.sizes["lead_hour"] == 72
+        np.testing.assert_array_equal(ds.lead_hour.values, np.arange(1, 73))
+        assert str(ds.valid_time.values[0, 0]) == "2020-01-01T06:00:00Z"
+        assert str(ds.valid_time.values[0, -1]) == "2020-01-04T05:00:00Z"
 
     sr_data = WindSuperResolutionDataset(
         condition,

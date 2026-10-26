@@ -115,9 +115,24 @@ def test_forecast_dataset_channels_negative_wind_causality_and_roundtrip(tmp_pat
     stats = tmp_path / "stats.json"
     _write_low(low, times, lat, lon)
     _write_static(static, lat, lon)
-    probe = WindForecastDataset(low, static, history_hours=6, years=[2020], normalize=False, preload_low=True)
+    probe = WindForecastDataset(
+        low,
+        static,
+        history_hours=6,
+        forecast_horizon_hours=1,
+        years=[2020],
+        normalize=False,
+        preload_low=True,
+    )
     _stats(stats, probe.physical_input_names, probe.output_variables)
-    data = WindForecastDataset(low, static, history_hours=6, years=[2020], stats_path=stats)
+    data = WindForecastDataset(
+        low,
+        static,
+        history_hours=6,
+        forecast_horizon_hours=1,
+        years=[2020],
+        stats_path=stats,
+    )
 
     assert len(data) == 7
     y, x = data[0]
@@ -127,7 +142,7 @@ def test_forecast_dataset_channels_negative_wind_causality_and_roundtrip(tmp_pat
     assert [channel.name for channel in data.input_channels()[:12]] == ["u10", "v10"] * 6
     metadata = data.sample_metadata(0)
     assert metadata["history_times"][-1] == pd.Timestamp("2020-01-01 05:00")
-    assert metadata["target_time"] == pd.Timestamp("2020-01-01 06:00")
+    assert metadata["target_times"] == [pd.Timestamp("2020-01-01 06:00")]
 
     physical = data.denormalize_input(x.numpy())
     assert physical[:12].min() < 0
@@ -172,7 +187,13 @@ def test_constant_channel_statistics_are_normalizable(tmp_path):
         constant = ds.load()
     constant["elevation"] = xr.zeros_like(constant["elevation"])
     constant.to_netcdf(static, engine="netcdf4")
-    data = WindForecastDataset(low, static, years=[2020], stats_path=stats)
+    data = WindForecastDataset(
+        low,
+        static,
+        forecast_horizon_hours=1,
+        years=[2020],
+        stats_path=stats,
+    )
     _, x = data[0]
     assert torch.isfinite(x).all()
     assert float(x[12].abs().max()) == 0.0
@@ -186,11 +207,89 @@ def test_forecast_dataset_never_crosses_year(tmp_path):
     static = tmp_path / "static.nc"
     _write_low(low, times, lat, lon)
     _write_static(static, lat, lon)
-    data = WindForecastDataset(low, static, history_hours=6, years=[2020], normalize=False)
+    data = WindForecastDataset(
+        low,
+        static,
+        history_hours=6,
+        forecast_horizon_hours=1,
+        years=[2020],
+        normalize=False,
+    )
     assert len(data) == 5
     for index in range(len(data)):
         metadata = data.sample_metadata(index)
         assert {value.year for value in metadata["history_times"]} == {2020}
+
+
+def test_forecast_dataset_72_hour_residual_contract(tmp_path):
+    lat = _grid(3, 1.0)
+    lon = _grid(4, 1.0)
+    times = pd.date_range("2020-01-01", periods=78, freq="h")
+    low = tmp_path / "low.nc"
+    static = tmp_path / "static.nc"
+    stats = tmp_path / "stats.json"
+    _write_low(low, times, lat, lon)
+    _write_static(static, lat, lon)
+    probe = WindForecastDataset(
+        low,
+        static,
+        history_hours=6,
+        forecast_horizon_hours=72,
+        years=[2020],
+        normalize=False,
+    )
+    _stats(stats, probe.physical_input_names, probe.output_variables)
+    data = WindForecastDataset(
+        low,
+        static,
+        history_hours=6,
+        forecast_horizon_hours=72,
+        years=[2020],
+        stats_path=stats,
+    )
+
+    assert len(data) == 1
+    residual, x = data[0]
+    assert residual.shape == (144, 3, 4)
+    assert x.shape == (18, 3, 4)
+    metadata = data.sample_metadata(0)
+    assert metadata["initial_time"] == pd.Timestamp("2020-01-01 05:00")
+    assert metadata["lead_hours"] == list(range(1, 73))
+    assert metadata["target_times"][0] == pd.Timestamp("2020-01-01 06:00")
+    assert metadata["target_times"][-1] == pd.Timestamp("2020-01-04 05:00")
+
+    targets = data.read_physical_targets(0)
+    absolute = data.absolute_output_from_prediction(residual.numpy(), x.numpy())
+    assert absolute.shape == (72, 2, 3, 4)
+    np.testing.assert_allclose(absolute, targets, rtol=0, atol=2e-5)
+
+    history = data.read_physical_times(range(0, 6))
+    expected = (
+        data.normalize_output(targets) - data.normalize_output(history[-1])[None, ...]
+    ).reshape(144, 3, 4)
+    np.testing.assert_allclose(residual.numpy(), expected, rtol=0, atol=1e-5)
+
+
+def test_forecast_dataset_72_hours_requires_complete_contiguous_window(tmp_path):
+    lat = _grid(3, 1.0)
+    lon = _grid(3, 1.0)
+    complete_times = pd.date_range("2020-01-01", periods=80, freq="h")
+    gapped_times = complete_times.delete(20)
+    earlier_times = pd.date_range("2020-01-01", periods=77, freq="h")
+    for name, times in (("gap", gapped_times), ("short", earlier_times)):
+        low = tmp_path / f"{name}_low.nc"
+        static = tmp_path / f"{name}_static.nc"
+        _write_low(low, times, lat, lon)
+        _write_static(static, lat, lon)
+        with pytest.raises(ValueError, match="No causal wind samples"):
+            WindForecastDataset(
+                low,
+                static,
+                history_hours=6,
+                forecast_horizon_hours=72,
+                years=[2020],
+                normalize=False,
+            )
 
 
 def test_file_time_index_merges_and_sorts_files(tmp_path):

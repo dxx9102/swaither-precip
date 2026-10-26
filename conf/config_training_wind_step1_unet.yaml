@@ -24,9 +24,9 @@ dataset:
   input_variables: [u10, v10]
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
-  stats_path: ${paths.stats}/wind_step1_2019_2022.json
+  stats_path: ${paths.stats}/wind_step1_2019_2022_72h.json
   history_hours: 6
-  forecast_horizon_hours: 1
+  forecast_horizon_hours: 72
   years: [2019, 2020, 2021, 2022]
   grid_channels: 4
   preload_low: true
@@ -45,9 +45,9 @@ validation:
     input_variables: [u10, v10]
     output_variables: [u10, v10]
     invariant_variables: [elevation, land_sea_mask]
-    stats_path: ${paths.stats}/wind_step1_2019_2022.json
+    stats_path: ${paths.stats}/wind_step1_2019_2022_72h.json
     history_hours: 6
-    forecast_horizon_hours: 1
+    forecast_horizon_hours: 72
     years: [2023]
     grid_channels: 4
     preload_low: true
@@ -78,7 +78,7 @@ training:
   amp: true
   memory_probe: true
   max_samples: 0
-  run_dir: ${paths.outputs}/wind_step1_unet
-  checkpoint_dir: ${paths.outputs}/wind_step1_unet/checkpoints
-  tensorboard_dir: ${paths.outputs}/tensorboard/wind_step1_unet
+  run_dir: ${paths.outputs}/wind_step1_unet_72h
+  checkpoint_dir: ${paths.outputs}/wind_step1_unet_72h/checkpoints
+  tensorboard_dir: ${paths.outputs}/tensorboard/wind_step1_unet_72h
   resume: null

@@ -32,24 +32,33 @@ def _to_python(value: Any) -> Any:
 class WindForecastUNet(Module):
     """PhysicsNeMo U-Net wrapper that pads arbitrary LR grids before downsampling.
 
-    The caller supplies a zero latent ``x0`` with two channels, matching the
-    CorrDiff regression convention.  No physical clipping is applied because
-    wind components are signed.
+    The caller supplies a zero latent ``x0`` with ``forecast_hours *
+    wind_components`` channels, matching the CorrDiff regression convention.
+    No physical clipping is applied because wind components are signed.
+
+    Outputs are flattened in lead-major order
+    ``[h1_u, h1_v, h2_u, h2_v, ...]`` and represent normalized persistence
+    residuals. The dataset is responsible for reconstructing absolute wind.
     """
 
-    __model_checkpoint_version__ = 1
+    __model_checkpoint_version__ = 2
 
     def __init__(
         self,
         img_in_channels: int,
-        img_out_channels: int = 2,
+        forecast_hours: int = 72,
+        wind_components: int = 2,
         unet_kwargs: Dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        if int(img_out_channels) != 2:
-            raise ValueError("WindForecastUNet requires exactly two output channels")
+        if int(forecast_hours) < 1:
+            raise ValueError("forecast_hours must be >= 1")
+        if int(wind_components) < 1:
+            raise ValueError("wind_components must be >= 1")
         self.img_in_channels = int(img_in_channels)
-        self.img_out_channels = int(img_out_channels)
+        self.forecast_hours = int(forecast_hours)
+        self.wind_components = int(wind_components)
+        self.img_out_channels = self.forecast_hours * self.wind_components
         kwargs = dict(unet_kwargs or {})
         kwargs.setdefault("img_in_channels", self.img_in_channels)
         kwargs.setdefault("img_out_channels", self.img_out_channels)
@@ -65,7 +74,8 @@ class WindForecastUNet(Module):
             "__module__": self.__class__.__module__,
             "__args__": {
                 "img_in_channels": self.img_in_channels,
-                "img_out_channels": self.img_out_channels,
+                "forecast_hours": self.forecast_hours,
+                "wind_components": self.wind_components,
                 "unet_kwargs": _to_python(kwargs),
             },
         }

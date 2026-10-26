@@ -8,9 +8,10 @@ datasets, models, training entry points, inference, and evaluation.
 
 1. A deterministic PhysicsNeMo U-Net uses the latest six hourly low-resolution
    `u10/v10` fields, two low-resolution static fields, and four coordinate
-   channels to predict wind one hour ahead.
-2. Inference feeds each prediction back into the six-hour history for six
-   autoregressive steps.
+   channels to predict normalized persistence residuals for leads 1-72.
+2. The residual at each lead is relative to the final history observation at
+   `t`; inference reconstructs all 72 absolute hourly fields in one forward
+   pass per batch without feeding predictions back into the history.
 3. The frozen Step-1 forecast library is paired by valid time with ICON
    high-resolution targets.
 4. The existing CorrDiff regression U-Net and conditional EDM residual model
@@ -50,7 +51,9 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_coun
 
 ## 1. Training statistics
 
-Compute Step-1 statistics from the 2019-2022 low-resolution records:
+Compute absolute-target Step-1 statistics from the 2019-2022 low-resolution
+records. The statistics script deliberately ignores the residual output of the
+training dataset and summarizes the physical `u10/v10` targets instead:
 
 ```bash
 python scripts/compute_wind_stats.py \
@@ -67,12 +70,15 @@ python scripts/train_wind_step1.py \
 The best checkpoint is:
 
 ```text
-outputs/wind_step1_unet/checkpoints/WindForecastUNet.best.mdlus
+outputs/wind_step1_unet_72h/checkpoints/WindForecastUNet.best.mdlus
 ```
+
+The 72-hour residual model uses a new output contract and is intentionally not
+compatible with the old one-step direct-regression checkpoints.
 
 ## 2. Frozen Step-1 conditions
 
-Generate one-to-six-hour conditions for all initial times that have a complete
+Generate one-to-72-hour conditions for all initial times that have a complete
 same-year six-hour history:
 
 ```bash
@@ -83,12 +89,14 @@ python scripts/export_wind_forecasts.py \
 The default output is:
 
 ```text
-data/wind_generated/step1_conditions_2019_2024.nc
+data/wind_generated/step1_conditions_2019_2024_72h.nc
 ```
 
 It has dimensions `(initial_time, lead_hour, lat, lon)`, two variables
-`u10/v10` in `m s-1`, and a `valid_time` coordinate. Step-2 never updates the
-Step-1 model.
+`u10/v10` in `m s-1`, a `valid_time` coordinate, and `lead_hour=1..72`.
+Step-2 never updates the Step-1 model. The current Step-2 configurations still
+consume the existing one-to-six-hour condition file and are unchanged by this
+Step-1-only migration.
 
 Compute Step-2 statistics using the generated conditions and ICON targets from
 2019-2022 only:
@@ -213,10 +221,11 @@ python -m py_compile swaither/datasets/wind.py swaither/models/wind_forecast.py 
 ```
 
 Tests cover exact-hour time parsing (including leap years and ICON day
-fractions), same-year history windows, channel order, signed wind values,
-normalization round trips, valid-time alignment, explicit high-resolution gaps,
-checkpoint round trips, two-channel regression/diffusion forward passes,
-autoregressive rollout, NetCDF dimensions, CRPS, and the year split.
+fractions), same-year 6-to-72-hour windows, residual channel order, signed wind
+values, normalization and absolute-field round trips, valid-time alignment,
+explicit high-resolution gaps, checkpoint round trips, two-channel
+regression/diffusion forward passes, one-shot 72-hour export, NetCDF dimensions,
+CRPS, and the year split.
 
 ## Known data limitation
 

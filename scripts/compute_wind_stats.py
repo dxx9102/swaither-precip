@@ -99,7 +99,15 @@ def main(cfg: DictConfig) -> None:
     for count, index in enumerate(indices, start=1):
         y, x = data[int(index)]
         _reservoir_update(inputs, input_names, x[: len(input_names)].numpy(), value_limit)
-        _reservoir_update(outputs, output_names, y.numpy(), value_limit)
+        if mode == "step1":
+            # WindForecastDataset returns normalized residuals. Statistics must
+            # describe absolute target fields because reconstruction adds them
+            # to the normalized final observation.
+            absolute_targets = data.read_physical_targets(int(index))
+            channel_first = np.moveaxis(absolute_targets, 1, 0)
+            _reservoir_update(outputs, output_names, channel_first, value_limit)
+        else:
+            _reservoir_update(outputs, output_names, y.numpy(), value_limit)
         if count % 100 == 0 or count == len(indices):
             print(f"  processed {count}/{len(indices)}")
 

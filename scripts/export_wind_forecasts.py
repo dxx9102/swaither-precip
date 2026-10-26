@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen Step-1 model autoregressively and export forecast conditions."""
+"""Run the frozen Step-1 residual model once per batch and export forecasts."""
 
 from __future__ import annotations
 
@@ -53,52 +53,52 @@ def _initial_positions(dataset: WindForecastDataset, years: Sequence[int]) -> Li
     return positions
 
 
-def rollout(
+def forecast(
     model: torch.nn.Module,
     dataset: WindForecastDataset,
     initial_positions: Sequence[int],
-    max_lead: int,
     batch_size: int,
     device: torch.device,
     amp: bool,
-) -> tuple[np.ndarray, np.ndarray, List[object]]:
+) -> tuple[np.ndarray, np.ndarray, List[pd.Timestamp]]:
+    """Predict all configured lead hours with one forward pass per batch."""
+    horizon = dataset.forecast_horizon_hours
     outputs = {
-        "u": np.empty((len(initial_positions), max_lead, *dataset.image_shape()), np.float32),
-        "v": np.empty((len(initial_positions), max_lead, *dataset.image_shape()), np.float32),
+        "u": np.empty((len(initial_positions), horizon, *dataset.image_shape()), np.float32),
+        "v": np.empty((len(initial_positions), horizon, *dataset.image_shape()), np.float32),
     }
-    histories = np.stack(
-        [
-            dataset.read_physical_times(
-                range(position - dataset.history_hours + 1, position + 1)
-            )
-            for position in initial_positions
-        ],
-        axis=0,
-    )
     initial_times = [dataset.low_index.times[position] for position in initial_positions]
     model.eval()
     with torch.no_grad():
-        for lead in range(1, max_lead + 1):
-            for start in range(0, len(initial_positions), batch_size):
-                end = min(start + batch_size, len(initial_positions))
-                history_batch = histories[start:end]
-                x = np.stack(
-                    [dataset.build_input_from_history(fields) for fields in history_batch],
-                    axis=0,
-                )
-                x = dataset.normalize_input(x)
-                x_tensor = torch.from_numpy(x).to(device=device, dtype=torch.float32)
-                zeros = torch.zeros((end - start, 2, *dataset.image_shape()), device=device)
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
-                    prediction = model(zeros, x_tensor).float()
-                physical = dataset.denormalize_output(prediction.cpu().numpy())
-                outputs["u"][start:end, lead - 1] = physical[:, 0]
-                outputs["v"][start:end, lead - 1] = physical[:, 1]
-                if lead < max_lead:
-                    histories[start:end, :-1] = history_batch[:, 1:]
-                    histories[start:end, -1, 0] = physical[:, 0]
-                    histories[start:end, -1, 1] = physical[:, 1]
-            print(f"Completed lead {lead}/{max_lead}")
+        for start in range(0, len(initial_positions), batch_size):
+            end = min(start + batch_size, len(initial_positions))
+            histories = np.stack(
+                [
+                    dataset.read_physical_times(
+                        range(position - dataset.history_hours + 1, position + 1)
+                    )
+                    for position in initial_positions[start:end]
+                ],
+                axis=0,
+            )
+            x = np.stack(
+                [dataset.build_input_from_history(fields) for fields in histories],
+                axis=0,
+            )
+            x = dataset.normalize_input(x)
+            x_tensor = torch.from_numpy(x).to(device=device, dtype=torch.float32)
+            residual_channels = horizon * len(dataset.output_channels())
+            zeros = torch.zeros(
+                (end - start, residual_channels, *dataset.image_shape()), device=device
+            )
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
+                residual = model(zeros, x_tensor).float()
+            physical = dataset.absolute_output_from_prediction(
+                residual.cpu().numpy(), x
+            )
+            outputs["u"][start:end] = physical[..., 0, :, :]
+            outputs["v"][start:end] = physical[..., 1, :, :]
+            print(f"Completed initial times {end}/{len(initial_positions)}")
     return outputs["u"], outputs["v"], initial_times
 
 
@@ -114,13 +114,23 @@ def main(cfg: DictConfig) -> None:
         positions = positions[: int(cfg.max_initial_times)]
     if not positions:
         raise RuntimeError("No initial times remain for export")
+    forecast_hours = int(cfg.forecast_hours)
+    if forecast_hours != dataset.forecast_horizon_hours:
+        raise ValueError(
+            "Export forecast_hours must match dataset.forecast_horizon_hours "
+            f"({forecast_hours} != {dataset.forecast_horizon_hours})"
+        )
     model = Module.from_checkpoint(cfg.checkpoint, {})
+    if getattr(model, "forecast_hours", None) != forecast_hours:
+        raise ValueError(
+            "Checkpoint forecast horizon does not match export configuration: "
+            f"{getattr(model, 'forecast_hours', None)} != {forecast_hours}"
+        )
     model = model.eval().requires_grad_(False).to(device)
-    u, v, initial_times = rollout(
+    u, v, initial_times = forecast(
         model,
         dataset,
         positions,
-        max_lead=int(cfg.rollout_hours),
         batch_size=int(cfg.batch_size),
         device=device,
         amp=bool(cfg.amp) and device.type == "cuda",
@@ -130,7 +140,7 @@ def main(cfg: DictConfig) -> None:
         u,
         v,
         initial_times,
-        list(range(1, int(cfg.rollout_hours) + 1)),
+        list(range(1, forecast_hours + 1)),
         dataset.latitude(),
         dataset.longitude(),
         source="wind-step1",

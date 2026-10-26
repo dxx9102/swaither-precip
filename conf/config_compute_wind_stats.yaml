@@ -12,7 +12,7 @@ values_per_channel: 1000000
 quantile_low: 0.005
 quantile_high: 0.995
 train_years: [2019, 2020, 2021, 2022]
-output_file: ${paths.stats}/wind_step1_2019_2022.json
+output_file: ${paths.stats}/wind_step1_2019_2022_72h.json
 dataset:
   type: ./swaither/datasets/wind.py::WindForecastDataset
   low_res_files:
@@ -22,7 +22,7 @@ dataset:
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
   history_hours: 6
-  forecast_horizon_hours: 1
+  forecast_horizon_hours: 72
   years: [2019, 2020, 2021, 2022]
   grid_channels: 4
   preload_low: true
