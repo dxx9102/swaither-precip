@@ -49,12 +49,18 @@ def _dataset(cfg: DictConfig) -> WindForecastDataset:
     return WindForecastDataset(**kwargs)
 
 
-def _model(cfg: DictConfig, dataset: WindForecastDataset, use_fp16: bool) -> WindForecastUNet:
+def _model(
+    cfg: DictConfig,
+    dataset: WindForecastDataset,
+    use_fp16: bool,
+    amp: bool,
+) -> WindForecastUNet:
     unet_kwargs = OmegaConf.to_container(cfg.unet, resolve=True)
     unet_kwargs.update(
         {
             "img_resolution": list(dataset.image_shape()),
             "use_fp16": use_fp16,
+            "amp_mode": amp,
             "model_type": "SongUNet",
         }
     )
@@ -167,7 +173,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     amp = bool(cfg.training.amp) and device.type == "cuda"
-    model = _model(cfg.model, train_dataset, use_fp16=False).to(device)
+    model = _model(cfg.model, train_dataset, use_fp16=False, amp=amp).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=float(cfg.training.lr), weight_decay=float(cfg.training.weight_decay)
     )
