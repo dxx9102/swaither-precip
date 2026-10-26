@@ -1,23 +1,10 @@
 #!/usr/bin/env bash
-# Submit with: yhbatch scripts/yhbatch_train_wind_forecast.sh [Hydra overrides]
-#
-# yhbatch is a Slurm sbatch wrapper on this cluster, so the directives below
-# deliberately use the standard #SBATCH spelling.
-#SBATCH --job-name=wind-forecast
-#SBATCH --partition=szjt_idd
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --time=48:00:00
-#SBATCH --export=ALL
-#SBATCH --output=slurm-wind-forecast-%j.out
-#SBATCH --error=slurm-wind-forecast-%j.err
+# Submit with:
+# yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_forecast.sh [Hydra overrides]
 
 set -euo pipefail
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${script_dir}/.." && pwd)"
+repo_root="/XYFS02/HDD_POOL/cmafj_klli/cmafj_klli_1/dx/swaither-precip"
 cd "${repo_root}"
 
 module load anaconda3/2023.09

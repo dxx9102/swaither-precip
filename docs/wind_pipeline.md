@@ -101,13 +101,15 @@ python scripts/compute_wind_stats.py \
 ## 3. CorrDiff training
 
 On the Slurm cluster, the two training stages can also be submitted directly
-with `yhbatch`. The forecast job trains Step 1:
+with `yhbatch`. This cluster only accepts scheduler options on the `yhbatch`
+command line; do not add `#SBATCH` directives to the job scripts. The forecast
+job trains Step 1:
 
 ```bash
-yhbatch scripts/yhbatch_train_wind_forecast.sh
+yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_forecast.sh
 
 # Any Hydra override is forwarded to train_wind_step1.py.
-yhbatch scripts/yhbatch_train_wind_forecast.sh \
+yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_forecast.sh \
   paths.raw_data_root=/path/to/uv10
 ```
 
@@ -116,19 +118,20 @@ Step-1 conditions, recomputes the Step-2 statistics, trains regression, then
 finds the newest regression checkpoint and passes it to diffusion:
 
 ```bash
-yhbatch scripts/yhbatch_train_wind_super_resolution.sh
+yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_super_resolution.sh
 
 # Use a non-default Step-1 checkpoint or data location.
 WIND_STEP1_CHECKPOINT=/path/to/WindForecastUNet.best.mdlus \
 WIND_RAW_DATA_ROOT=/path/to/uv10 \
-yhbatch scripts/yhbatch_train_wind_super_resolution.sh
+yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_super_resolution.sh
 ```
 
-The scripts request the `szjt_idd` partition, one GPU, and 16 CPUs. Adjust the
-`#SBATCH` directives in the script or override them on the `yhbatch` command
-line to match the allocation policy of your cluster. The jobs do not request
-host memory because this cluster rejects `--mem` on `szjt_idd`; add a memory
-directive if your partition requires one.
+The scripts first `cd` to the absolute repository path
+`/XYFS02/HDD_POOL/cmafj_klli/cmafj_klli_1/dx/swaither-precip`, which is also
+available through `~/HDD_POOL`. All subsequent project paths remain relative
+to that directory. Keep the absolute path synchronized if the repository
+moves. Required and optional scheduler resources are passed directly to
+`yhbatch`, for example `-p a800x -G 1 -c 16 -t 48:00:00`.
 
 Optional Step-2 path overrides are `WIND_STEP1_STATS`,
 `WIND_CONDITIONS_FILE`, `WIND_STEP2_STATS`, `WIND_REGRESSION_RUN_DIR`, and

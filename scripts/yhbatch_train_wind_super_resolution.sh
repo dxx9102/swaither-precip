@@ -1,27 +1,16 @@
 #!/usr/bin/env bash
-# Submit with: yhbatch scripts/yhbatch_train_wind_super_resolution.sh
+# Submit with:
+# yhbatch -p a800x -G 1 scripts/yhbatch_train_wind_super_resolution.sh
 #
 # This job consumes the Step-1 checkpoint, exports frozen forecast conditions,
 # computes Step-2 statistics, trains regression, and then trains diffusion with
 # the newest regression checkpoint from this job.
-#SBATCH --job-name=wind-super-resolution
-#SBATCH --partition=szjt_idd
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gres=gpu:1
-#SBATCH --time=7-00:00:00
-#SBATCH --export=ALL
-#SBATCH --output=slurm-wind-super-resolution-%j.out
-#SBATCH --error=slurm-wind-super-resolution-%j.err
 
 set -euo pipefail
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${script_dir}/.." && pwd)"
+repo_root="/XYFS02/HDD_POOL/cmafj_klli/cmafj_klli_1/dx/swaither-precip"
 cd "${repo_root}"
 
-# Paths are relative to the repository unless an absolute path is supplied.
 step1_checkpoint="${WIND_STEP1_CHECKPOINT:-outputs/wind_step1_unet/checkpoints/WindForecastUNet.best.mdlus}"
 step1_stats="${WIND_STEP1_STATS:-data/stats/wind_step1_2019_2022.json}"
 conditions_file="${WIND_CONDITIONS_FILE:-data/wind_generated/step1_conditions_2019_2024.nc}"
