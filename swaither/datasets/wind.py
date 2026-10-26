@@ -531,16 +531,46 @@ class WindForecastDataset(DownscalingDataset):
         if not self.normalize:
             return np.asarray(x, dtype=np.float32)
         out = np.asarray(x, dtype=np.float32).copy()
+        if out.ndim < 3:
+            raise ValueError(
+                "Expected input shape (..., channels, height, width), "
+                f"got {out.shape}"
+            )
         physical = len(self.input_min)
-        out[:physical] = (out[:physical] - self.input_min[:, None, None]) / (self.input_max - self.input_min)[:, None, None]
+        channel_axis = out.ndim - 3
+        selection = (slice(None),) * channel_axis + (slice(0, physical),)
+        stats_shape = (
+            (1,) * channel_axis
+            + (physical,)
+            + (1,) * (out.ndim - channel_axis - 1)
+        )
+        out[selection] = (
+            out[selection] - self.input_min.reshape(stats_shape)
+        ) / (self.input_max - self.input_min).reshape(stats_shape)
         return out
 
     def denormalize_input(self, x: np.ndarray) -> np.ndarray:
         if not self.normalize:
             return np.asarray(x, dtype=np.float32)
         out = np.asarray(x, dtype=np.float32).copy()
+        if out.ndim < 3:
+            raise ValueError(
+                "Expected input shape (..., channels, height, width), "
+                f"got {out.shape}"
+            )
         physical = len(self.input_min)
-        out[:physical] = out[:physical] * (self.input_max - self.input_min)[:, None, None] + self.input_min[:, None, None]
+        channel_axis = out.ndim - 3
+        selection = (slice(None),) * channel_axis + (slice(0, physical),)
+        stats_shape = (
+            (1,) * channel_axis
+            + (physical,)
+            + (1,) * (out.ndim - channel_axis - 1)
+        )
+        out[selection] = (
+            out[selection]
+            * (self.input_max - self.input_min).reshape(stats_shape)
+            + self.input_min.reshape(stats_shape)
+        )
         return out
 
     def normalize_output(self, y: np.ndarray) -> np.ndarray:

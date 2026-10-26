@@ -133,6 +133,17 @@ def test_forecast_dataset_channels_negative_wind_causality_and_roundtrip(tmp_pat
     assert physical[:12].min() < 0
     restored = data.denormalize_input(data.normalize_input(physical))
     np.testing.assert_allclose(restored, physical, rtol=0, atol=2e-5)
+    physical_batch = np.stack([physical, physical * 0.5], axis=0)
+    normalized_batch = data.normalize_input(physical_batch)
+    np.testing.assert_allclose(
+        normalized_batch[0], data.normalize_input(physical), rtol=0, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        data.denormalize_input(normalized_batch),
+        physical_batch,
+        rtol=0,
+        atol=2e-5,
+    )
     physical_y = data.denormalize_output(y.numpy())
     restored_y = data.denormalize_output(data.normalize_output(physical_y))
     np.testing.assert_allclose(restored_y, physical_y, rtol=0, atol=2e-5)

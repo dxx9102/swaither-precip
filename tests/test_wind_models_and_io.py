@@ -28,6 +28,7 @@ from swaither.wind_helpers import (
 
 from .test_wind_data import (
     _grid,
+    _stats,
     _write_condition,
     _write_high,
     _write_low,
@@ -150,7 +151,21 @@ def test_autoregressive_rollout_conditioning_and_end_to_end_shapes(tmp_path):
     _write_high(high, high_times, high_lat, high_lon)
     _write_static(static_high, high_lat, high_lon)
 
-    forecast_data = WindForecastDataset(low, static_low, years=[2020], normalize=False)
+    forecast_probe = WindForecastDataset(
+        low, static_low, years=[2020], normalize=False
+    )
+    forecast_stats = tmp_path / "forecast_stats.json"
+    _stats(
+        forecast_stats,
+        forecast_probe.physical_input_names,
+        forecast_probe.output_variables,
+    )
+    forecast_data = WindForecastDataset(
+        low,
+        static_low,
+        years=[2020],
+        stats_path=forecast_stats,
+    )
     export = _load_export_module()
     u, v, initial_times = export.rollout(
         _tiny_forecast_model().eval(),
