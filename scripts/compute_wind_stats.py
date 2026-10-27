@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Compute train-only robust min/max statistics for the wind pipeline."""
+"""Compute train-only robust statistics for the two-model wind pipeline."""
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Sequence
 
 import hydra
 import numpy as np
-from omegaconf import DictConfig, OmegaConf
+import xarray as xr
+from omegaconf import DictConfig
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
@@ -19,28 +19,27 @@ for path in (_REPO_ROOT, _SCRIPT_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from swaither.datasets.wind import WindForecastDataset, WindSuperResolutionDataset
+from swaither.datasets.wind import FileTimeIndex
 from swaither.wind_helpers import configure_storage
-
 
 configure_storage()
 
 
-def _dataset(cls, cfg: DictConfig):
-    kwargs = OmegaConf.to_container(cfg, resolve=True)
-    kwargs.pop("type", None)
-    kwargs["normalize"] = False
-    if cls is WindForecastDataset and "low_res_files" not in kwargs and "low_res_file" in kwargs:
-        kwargs["low_res_files"] = kwargs.pop("low_res_file")
-    if cls is WindSuperResolutionDataset and "condition_files" not in kwargs and "low_res_file" in kwargs:
-        kwargs["condition_files"] = kwargs.pop("low_res_file")
-    if cls is WindSuperResolutionDataset and "high_res_files" not in kwargs and "high_res_file" in kwargs:
-        kwargs["high_res_files"] = kwargs.pop("high_res_file")
-    return cls(**kwargs)
-
-
-def _reservoir_update(store: Dict[str, np.ndarray], names: List[str], array: np.ndarray, limit: int) -> None:
+def _reservoir_update(
+    store: Dict[str, np.ndarray],
+    names: Sequence[str],
+    array: np.ndarray,
+    limit: int,
+) -> None:
     values = np.asarray(array, dtype=np.float32)
+    if values.ndim < 2:
+        raise ValueError("Reservoir statistics require an array with at least two dimensions")
+    if values.ndim == 2:
+        values = values[None, ...]
+    if values.shape[0] != len(names):
+        raise ValueError(
+            f"Expected {len(names)} channel-first fields, got shape {values.shape}"
+        )
     for channel, name in enumerate(names):
         flat = values[channel].ravel()
         finite = flat[np.isfinite(flat)]
@@ -51,73 +50,109 @@ def _reservoir_update(store: Dict[str, np.ndarray], names: List[str], array: np.
             finite = finite[positions]
         previous = store.get(name)
         store[name] = finite if previous is None else np.concatenate([previous, finite])
-        # Amortize compaction. Copying a full one-million-value reservoir for
-        # every hourly sample is prohibitively expensive at 35k training times.
         if store[name].size > 2 * limit:
             positions = np.linspace(0, store[name].size - 1, limit, dtype=np.int64)
             store[name] = store[name][positions]
 
 
-def _stats_from_store(store: Dict[str, np.ndarray], low: float, high: float) -> Dict[str, Dict[str, float]]:
-    result = {}
+def _stats_from_store(
+    store: Dict[str, np.ndarray], low: float, high: float
+) -> Dict[str, Dict[str, float]]:
+    result: Dict[str, Dict[str, float]] = {}
     for name, values in store.items():
         mn, mx = np.quantile(values, [low, high]).tolist()
         if not np.isfinite(mn) or not np.isfinite(mx) or mx < mn:
             raise ValueError(f"Invalid robust range for {name}: {(mn, mx)}")
-        # A constant invariant channel (for example, an all-ocean mask tile)
-        # is valid input.  Give it a unit denominator so normalization remains
-        # well-defined while mapping the constant field to zero.
         if mx == mn:
             mx = mn + 1.0
         result[name] = {"min": float(mn), "max": float(mx)}
     return result
 
 
+def _sample_positions(length: int, max_samples: int) -> np.ndarray:
+    if max_samples <= 0 or max_samples >= length:
+        return np.arange(length, dtype=np.int64)
+    return np.linspace(0, length - 1, max_samples, dtype=np.int64)
+
+
+def _dynamic_stats(
+    index: FileTimeIndex,
+    variables: Sequence[str],
+    positions: np.ndarray,
+    store: Dict[str, np.ndarray],
+    limit: int,
+    engine: str,
+) -> None:
+    chunks = list(range(0, len(positions), 128))
+    label = ",".join(variables)
+    for chunk_index, offset in enumerate(chunks, start=1):
+        chunk = positions[offset : offset + 128]
+        print(
+            f"[stats] {label}: chunk {chunk_index}/{len(chunks)} "
+            f"({len(chunk)} fields)",
+            flush=True,
+        )
+        values = index.read_variables_many(
+            variables, chunk, index.lat, index.lon, engine
+        )
+        # ``read_variables_many`` returns (time, channel, lat, lon), while the
+        # reservoir helper uses a channel-first contract.  Transposing preserves
+        # every sampled time for each channel instead of silently keeping only
+        # the first field in each chunk.
+        _reservoir_update(store, variables, values.transpose(1, 0, 2, 3), limit)
+
+
 @hydra.main(version_base="1.2", config_path="../conf", config_name="config_compute_wind_stats")
 def main(cfg: DictConfig) -> None:
     configure_storage()
-    mode = str(cfg.mode)
-    if mode == "step1":
-        data = _dataset(WindForecastDataset, cfg.dataset)
-        input_names = data.physical_input_names
-        output_names = data.output_variables
-    elif mode == "step2":
-        data = _dataset(WindSuperResolutionDataset, cfg.dataset)
-        input_names = data.physical_input_names
-        output_names = data.output_variables
-    else:
-        raise ValueError("mode must be step1 or step2")
-
-    if len(data) == 0:
-        raise RuntimeError("Stats dataset is empty")
-    max_samples = int(cfg.max_samples)
-    indices = np.arange(len(data)) if max_samples <= 0 or max_samples >= len(data) else np.linspace(0, len(data) - 1, max_samples, dtype=np.int64)
+    low_index = FileTimeIndex(cfg.dataset.low_res_files, engine=cfg.dataset.engine)
+    high_index = FileTimeIndex(cfg.dataset.high_res_files, engine=cfg.dataset.engine)
+    low_positions = _sample_positions(len(low_index), int(cfg.max_samples))
+    high_positions = _sample_positions(len(high_index), int(cfg.max_samples))
+    limit = int(cfg.values_per_channel)
     inputs: Dict[str, np.ndarray] = {}
     outputs: Dict[str, np.ndarray] = {}
-    value_limit = int(cfg.values_per_channel)
-    print(f"Computing {mode} statistics from {len(indices)} samples out of {len(data)}")
-    for count, index in enumerate(indices, start=1):
-        y, x = data[int(index)]
-        _reservoir_update(inputs, input_names, x[: len(input_names)].numpy(), value_limit)
-        if mode == "step1":
-            # WindForecastDataset returns normalized residuals. Statistics must
-            # describe absolute target fields because reconstruction adds them
-            # to the normalized final observation.
-            absolute_targets = data.read_physical_targets(int(index))
-            channel_first = np.moveaxis(absolute_targets, 1, 0)
-            _reservoir_update(outputs, output_names, channel_first, value_limit)
-        else:
-            _reservoir_update(outputs, output_names, y.numpy(), value_limit)
-        if count % 100 == 0 or count == len(indices):
-            print(f"  processed {count}/{len(indices)}")
 
+    _dynamic_stats(
+        low_index,
+        cfg.dataset.low_res_variables,
+        low_positions,
+        inputs,
+        limit,
+        cfg.dataset.engine,
+    )
+    with xr.open_dataset(cfg.dataset.static_high_file, engine=cfg.dataset.engine) as ds:
+        for name in cfg.dataset.invariant_variables:
+            print(f"[stats] static: {name}", flush=True)
+            _reservoir_update(inputs, [name], np.asarray(ds[name].values), limit)
+    _dynamic_stats(
+        high_index,
+        cfg.dataset.high_res_variables,
+        high_positions,
+        outputs,
+        limit,
+        cfg.dataset.engine,
+    )
+
+    output_named = {
+        output_name: outputs[source_name]
+        for source_name, output_name in zip(
+            cfg.dataset.high_res_variables, cfg.dataset.output_variables
+        )
+    }
     payload = {
-        "input": _stats_from_store(inputs, float(cfg.quantile_low), float(cfg.quantile_high)),
-        "output": _stats_from_store(outputs, float(cfg.quantile_low), float(cfg.quantile_high)),
+        "input": _stats_from_store(
+            inputs, float(cfg.quantile_low), float(cfg.quantile_high)
+        ),
+        "output": _stats_from_store(
+            output_named, float(cfg.quantile_low), float(cfg.quantile_high)
+        ),
         "metadata": {
-            "mode": mode,
+            "task": "wind-joint",
             "train_years": list(cfg.train_years),
-            "sample_count": len(indices),
+            "sample_count": len(low_positions),
+            "high_res_sample_count": len(high_positions),
+            "values_per_channel": limit,
             "quantile_low": float(cfg.quantile_low),
             "quantile_high": float(cfg.quantile_high),
         },

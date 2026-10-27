@@ -1,0 +1,99 @@
+hydra:
+  job:
+    chdir: false
+    name: wind_diffusion
+  run:
+    dir: ${paths.outputs}/${hydra:job.name}
+
+paths:
+  raw_data_root: ../../data/uv10
+  outputs: outputs
+  stats: data/stats
+
+dataset:
+  type: ./swaither/datasets/wind.py::WindForecastDataset
+  low_res_files:
+    - ${paths.raw_data_root}/uv10_2019_2022_clipped_LRes.nc
+  high_res_files:
+    - ${paths.raw_data_root}/uv10_2019_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2020_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2021_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2022_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
+  low_res_variables: [u10, v10]
+  high_res_variables: [u_10m, v_10m]
+  output_variables: [u10, v10]
+  invariant_variables: [elevation, land_sea_mask]
+  stats_path: ${paths.stats}/wind_joint_2019_2022.json
+  history_hours: 6
+  forecast_horizon_hours: 72
+  years: [2019, 2020, 2021, 2022]
+  grid_channels: 4
+  preload_low: true
+  preload_dtype: float16
+  normalize: true
+  nan_policy: error
+  engine: netcdf4
+  leads: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72]
+
+validation:
+  batch_size: 1
+  num_workers: 0
+  max_samples: 8
+  leads: [1, 6, 24, 48, 72]
+  dataset:
+    type: ./swaither/datasets/wind.py::WindForecastDataset
+    low_res_files:
+      - ${paths.raw_data_root}/uv10_2023_clipped_LRes.nc
+    high_res_files:
+      - ${paths.raw_data_root}/uv10_2023_clipped_HR.nc
+    static_high_file: ${paths.raw_data_root}/fj_HR.nc
+    low_res_variables: [u10, v10]
+    high_res_variables: [u_10m, v_10m]
+    output_variables: [u10, v10]
+    invariant_variables: [elevation, land_sea_mask]
+    stats_path: ${paths.stats}/wind_joint_2019_2022.json
+    history_hours: 6
+    forecast_horizon_hours: 72
+    years: [2023]
+    grid_channels: 4
+    preload_low: true
+    preload_dtype: float16
+    normalize: true
+    nan_policy: error
+    engine: netcdf4
+
+model:
+  hr_mean_conditioning: true
+  P_mean: 0.0
+  P_std: 1.2
+  sigma_data: 0.5
+  model_args:
+    model_channels: 64
+    channel_mult: [1, 2, 2]
+    attn_resolutions: []
+    dropout: 0.05
+    embedding_type: positional
+    use_apex_gn: false
+    checkpoint_level: 1
+
+training:
+  seed: 42
+  epochs: 150
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  num_workers: 2
+  lr: 2.0e-4
+  grad_clip: 1.0
+  amp: true
+  memory_probe: true
+  max_samples: 0
+  patch_shape_y: 272
+  patch_shape_x: 320
+  patch_num: 1
+  regression_checkpoint: ${paths.outputs}/wind_regression/checkpoints/WindForecastUNet.best.mdlus
+  run_dir: ${paths.outputs}/wind_diffusion
+  checkpoint_dir: ${paths.outputs}/wind_diffusion/checkpoints
+  tensorboard_dir: ${paths.outputs}/tensorboard/wind_diffusion
+  resume: null
+  early_stopping_patience: 15

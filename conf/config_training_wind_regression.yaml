@@ -1,30 +1,30 @@
 hydra:
   job:
     chdir: false
-    name: wind_step1_unet
+    name: wind_regression
   run:
     dir: ${paths.outputs}/${hydra:job.name}
-  searchpath:
-    - pkg://conf/base
-
-defaults:
-  - _self_
 
 paths:
   raw_data_root: ../../data/uv10
   outputs: outputs
-  wind_generated: data/wind_generated
   stats: data/stats
 
 dataset:
   type: ./swaither/datasets/wind.py::WindForecastDataset
   low_res_files:
     - ${paths.raw_data_root}/uv10_2019_2022_clipped_LRes.nc
-  static_low_file: ${paths.raw_data_root}/fj_LRes.nc
-  input_variables: [u10, v10]
+  high_res_files:
+    - ${paths.raw_data_root}/uv10_2019_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2020_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2021_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2022_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
+  low_res_variables: [u10, v10]
+  high_res_variables: [u_10m, v_10m]
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
-  stats_path: ${paths.stats}/wind_step1_2019_2022_72h.json
+  stats_path: ${paths.stats}/wind_joint_2019_2022.json
   history_hours: 6
   forecast_horizon_hours: 72
   years: [2019, 2020, 2021, 2022]
@@ -33,19 +33,23 @@ dataset:
   preload_dtype: float16
   normalize: true
   nan_policy: error
+  engine: netcdf4
 
 validation:
-  batch_size: 64
-  max_samples: 0
+  batch_size: 1
+  max_samples: 64
   dataset:
     type: ./swaither/datasets/wind.py::WindForecastDataset
     low_res_files:
       - ${paths.raw_data_root}/uv10_2023_clipped_LRes.nc
-    static_low_file: ${paths.raw_data_root}/fj_LRes.nc
-    input_variables: [u10, v10]
+    high_res_files:
+      - ${paths.raw_data_root}/uv10_2023_clipped_HR.nc
+    static_high_file: ${paths.raw_data_root}/fj_HR.nc
+    low_res_variables: [u10, v10]
+    high_res_variables: [u_10m, v_10m]
     output_variables: [u10, v10]
     invariant_variables: [elevation, land_sea_mask]
-    stats_path: ${paths.stats}/wind_step1_2019_2022_72h.json
+    stats_path: ${paths.stats}/wind_joint_2019_2022.json
     history_hours: 6
     forecast_horizon_hours: 72
     years: [2023]
@@ -54,6 +58,7 @@ validation:
     preload_dtype: float16
     normalize: true
     nan_policy: error
+    engine: netcdf4
 
 model:
   unet:
@@ -67,8 +72,9 @@ model:
 training:
   seed: 42
   epochs: 150
-  batch_size: 32
-  num_workers: 4
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  num_workers: 2
   lr: 2.0e-4
   weight_decay: 1.0e-4
   lr_factor: 0.5
@@ -78,7 +84,7 @@ training:
   amp: true
   memory_probe: true
   max_samples: 0
-  run_dir: ${paths.outputs}/wind_step1_unet_72h
-  checkpoint_dir: ${paths.outputs}/wind_step1_unet_72h/checkpoints
-  tensorboard_dir: ${paths.outputs}/tensorboard/wind_step1_unet_72h
+  run_dir: ${paths.outputs}/wind_regression
+  checkpoint_dir: ${paths.outputs}/wind_regression/checkpoints
+  tensorboard_dir: ${paths.outputs}/tensorboard/wind_regression
   resume: null

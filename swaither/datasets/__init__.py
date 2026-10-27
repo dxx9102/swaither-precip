@@ -16,16 +16,18 @@
 
 from .wind import (
     GRID_CHANNEL_NAMES,
+    LEAD_CHANNEL_NAMES,
+    WindDiffusionDataset,
     WindForecastDataset,
-    WindSuperResolutionDataset,
     load_channel_stats,
     parse_hourly_times,
 )
 
 __all__ = [
     "GRID_CHANNEL_NAMES",
+    "LEAD_CHANNEL_NAMES",
+    "WindDiffusionDataset",
     "WindForecastDataset",
-    "WindSuperResolutionDataset",
     "load_channel_stats",
     "parse_hourly_times",
 ]

@@ -69,6 +69,177 @@ def _netcdf_initialize(path: Path, dimensions: Dict[str, int]) -> Any:
     return handle
 
 
+class WindForecastNetCDFWriter:
+    """Stream deterministic or ensemble wind forecast slices to NetCDF.
+
+    The writer owns the NetCDF handle so callers never need to allocate arrays
+    spanning the full test year.  Use as a context manager and write one initial
+    time or one ``(initial time, lead)`` slice at a time.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        initial_times: Sequence[pd.Timestamp],
+        lead_hours: Sequence[int],
+        lat: np.ndarray,
+        lon: np.ndarray,
+        source: str,
+        ensemble_size: Optional[int] = None,
+    ) -> None:
+        self.path = Path(path)
+        self.initial_times = [pd.Timestamp(value) for value in initial_times]
+        self.lead_hours = [int(value) for value in lead_hours]
+        self.lat = np.asarray(lat, dtype=np.float32)
+        self.lon = np.asarray(lon, dtype=np.float32)
+        self.source = str(source)
+        self.ensemble_size = (
+            None if ensemble_size is None else int(ensemble_size)
+        )
+        if self.ensemble_size is not None and self.ensemble_size < 1:
+            raise ValueError("ensemble_size must be positive when provided")
+        self._handle: Any = None
+        self._u: Any = None
+        self._v: Any = None
+
+    @property
+    def dimensions(self) -> Tuple[str, ...]:
+        base = ("initial_time", "lead_hour")
+        if self.ensemble_size is not None:
+            base += ("ensemble",)
+        return base + ("lat", "lon")
+
+    def __enter__(self) -> "WindForecastNetCDFWriter":
+        dimensions = {
+            "initial_time": len(self.initial_times),
+            "lead_hour": len(self.lead_hours),
+            "lat": len(self.lat),
+            "lon": len(self.lon),
+        }
+        if self.ensemble_size is not None:
+            dimensions["ensemble"] = self.ensemble_size
+        self._handle = _netcdf_initialize(self.path, dimensions)
+        handle = self._handle
+        try:
+            time_var = handle.createVariable("initial_time", str, ("initial_time",))
+            time_var[:] = np.asarray(
+                [value.strftime("%Y-%m-%dT%H:%M:%SZ") for value in self.initial_times],
+                dtype=object,
+            )
+            time_var.units = "ISO 8601 UTC"
+            lead_var = handle.createVariable("lead_hour", "i4", ("lead_hour",))
+            lead_var[:] = np.asarray(self.lead_hours, dtype=np.int32)
+            lead_var.units = "hours"
+            valid_var = handle.createVariable(
+                "valid_time", str, ("initial_time", "lead_hour")
+            )
+            valid_var[:] = np.asarray(
+                [
+                    [
+                        (initial + pd.Timedelta(hours=lead)).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        )
+                        for lead in self.lead_hours
+                    ]
+                    for initial in self.initial_times
+                ],
+                dtype=object,
+            )
+            valid_var.units = "ISO 8601 UTC"
+            lat_var = handle.createVariable("lat", "f4", ("lat",))
+            lat_var[:] = self.lat
+            lat_var.units = "degrees_north"
+            lon_var = handle.createVariable("lon", "f4", ("lon",))
+            lon_var[:] = self.lon
+            lon_var.units = "degrees_east"
+            self._u = handle.createVariable(
+                "u10",
+                "f4",
+                self.dimensions,
+                zlib=True,
+                complevel=2,
+                shuffle=True,
+            )
+            self._v = handle.createVariable(
+                "v10",
+                "f4",
+                self.dimensions,
+                zlib=True,
+                complevel=2,
+                shuffle=True,
+            )
+            for name, variable in (("u10", self._u), ("v10", self._v)):
+                variable.units = "m s-1"
+                variable.coordinates = "valid_time lat lon"
+                variable.long_name = (
+                    "10 metre eastward wind"
+                    if name == "u10"
+                    else "10 metre northward wind"
+                )
+                variable.source = self.source
+            handle.source = self.source
+            return self
+        except Exception:
+            self.close()
+            raise
+
+    def write_lead(
+        self,
+        initial_index: int,
+        lead_index: int,
+        u: np.ndarray,
+        v: np.ndarray,
+    ) -> None:
+        """Write one spatial field, or ensemble of fields, for one lead."""
+        if self._handle is None:
+            raise RuntimeError("WindForecastNetCDFWriter is not open")
+        initial_index = int(initial_index)
+        lead_index = int(lead_index)
+        if not 0 <= initial_index < len(self.initial_times):
+            raise IndexError("initial_index is outside the writer dimension")
+        if not 0 <= lead_index < len(self.lead_hours):
+            raise IndexError("lead_index is outside the writer dimension")
+        spatial = (len(self.lat), len(self.lon))
+        expected = spatial if self.ensemble_size is None else (
+            self.ensemble_size,
+            *spatial,
+        )
+        u_values = np.asarray(u, dtype=np.float32)
+        v_values = np.asarray(v, dtype=np.float32)
+        if u_values.shape != expected or v_values.shape != expected:
+            raise ValueError(
+                f"Expected wind field shape {expected}, got {u_values.shape} and {v_values.shape}"
+            )
+        self._u[initial_index, lead_index] = u_values
+        self._v[initial_index, lead_index] = v_values
+
+    def write_initial(self, initial_index: int, u: np.ndarray, v: np.ndarray) -> None:
+        """Write all configured leads for one initial time."""
+        initial_index = int(initial_index)
+        lead_shape = (len(self.lead_hours),)
+        if self.ensemble_size is not None:
+            lead_shape += (self.ensemble_size,)
+        expected = lead_shape + (len(self.lat), len(self.lon))
+        u_values = np.asarray(u, dtype=np.float32)
+        v_values = np.asarray(v, dtype=np.float32)
+        if u_values.shape != expected or v_values.shape != expected:
+            raise ValueError(
+                f"Expected initial-time forecast shape {expected}, got "
+                f"{u_values.shape} and {v_values.shape}"
+            )
+        for lead_index in range(len(self.lead_hours)):
+            self.write_lead(initial_index, lead_index, u_values[lead_index], v_values[lead_index])
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        del exc_type, exc_value, traceback
+        self.close()
+
+
 def write_forecast_netcdf(
     path: Path,
     u: np.ndarray,
@@ -77,7 +248,7 @@ def write_forecast_netcdf(
     lead_hours: Sequence[int],
     lat: np.ndarray,
     lon: np.ndarray,
-    source: str = "step1",
+    source: str = "wind-regression",
 ) -> None:
     """Write deterministic forecasts with dims ``initial_time, lead_hour, lat, lon``."""
     u = np.asarray(u, dtype=np.float32)
@@ -85,63 +256,11 @@ def write_forecast_netcdf(
     expected = (len(initial_times), len(lead_hours), len(lat), len(lon))
     if u.shape != expected or v.shape != expected:
         raise ValueError(f"Expected forecast arrays {expected}, got {u.shape} and {v.shape}")
-    handle = _netcdf_initialize(
-        Path(path),
-        {
-            "initial_time": len(initial_times),
-            "lead_hour": len(lead_hours),
-            "lat": len(lat),
-            "lon": len(lon),
-        },
-    )
-    try:
-        initial_time_cf = np.asarray(
-            [pd.Timestamp(value).strftime("%Y-%m-%dT%H:%M:%SZ") for value in initial_times],
-            dtype=object,
-        )
-        time_var = handle.createVariable("initial_time", str, ("initial_time",))
-        time_var[:] = initial_time_cf
-        time_var.units = "ISO 8601 UTC"
-        lead_var = handle.createVariable("lead_hour", "i4", ("lead_hour",))
-        lead_var[:] = np.asarray(lead_hours, dtype=np.int32)
-        lead_var.units = "hours"
-        valid_var = handle.createVariable("valid_time", str, ("initial_time", "lead_hour"))
-        valid_var[:] = np.asarray(
-            [
-                [
-                    (pd.Timestamp(initial) + pd.Timedelta(hours=int(lead))).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    )
-                    for lead in lead_hours
-                ]
-                for initial in initial_times
-            ],
-            dtype=object,
-        )
-        valid_var.units = "ISO 8601 UTC"
-        lat_var = handle.createVariable("lat", "f4", ("lat",))
-        lat_var[:] = lat
-        lat_var.units = "degrees_north"
-        lon_var = handle.createVariable("lon", "f4", ("lon",))
-        lon_var[:] = lon
-        lon_var.units = "degrees_east"
-        for name, values in (("u10", u), ("v10", v)):
-            var = handle.createVariable(
-                name,
-                "f4",
-                ("initial_time", "lead_hour", "lat", "lon"),
-                zlib=True,
-                complevel=2,
-                shuffle=True,
-            )
-            var[:] = values
-            var.units = "m s-1"
-            var.coordinates = "valid_time lat lon"
-            var.long_name = "10 metre eastward wind" if name == "u10" else "10 metre northward wind"
-            var.source = source
-        handle.source = source
-    finally:
-        handle.close()
+    with WindForecastNetCDFWriter(
+        Path(path), initial_times, lead_hours, lat, lon, source
+    ) as writer:
+        for index in range(len(initial_times)):
+            writer.write_initial(index, u[index], v[index])
 
 
 def write_ensemble_netcdf(
@@ -162,62 +281,17 @@ def write_ensemble_netcdf(
     expected = (len(initial_times), len(lead_hours), u.shape[2], len(lat), len(lon))
     if u.shape != expected:
         raise ValueError(f"Expected ensemble shape {expected}, got {u.shape}")
-    handle = _netcdf_initialize(
+    with WindForecastNetCDFWriter(
         Path(path),
-        {
-            "initial_time": len(initial_times),
-            "lead_hour": len(lead_hours),
-            "ensemble": u.shape[2],
-            "lat": len(lat),
-            "lon": len(lon),
-        },
-    )
-    try:
-        time_var = handle.createVariable("initial_time", str, ("initial_time",))
-        time_var[:] = np.asarray(
-            [pd.Timestamp(value).strftime("%Y-%m-%dT%H:%M:%SZ") for value in initial_times],
-            dtype=object,
-        )
-        lead_var = handle.createVariable("lead_hour", "i4", ("lead_hour",))
-        lead_var[:] = np.asarray(lead_hours, dtype=np.int32)
-        lead_var.units = "hours"
-        valid_var = handle.createVariable("valid_time", str, ("initial_time", "lead_hour"))
-        valid_var[:] = np.asarray(
-            [
-                [
-                    (pd.Timestamp(initial) + pd.Timedelta(hours=int(lead))).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    )
-                    for lead in lead_hours
-                ]
-                for initial in initial_times
-            ],
-            dtype=object,
-        )
-        valid_var.units = "ISO 8601 UTC"
-        lat_var = handle.createVariable("lat", "f4", ("lat",))
-        lat_var[:] = lat
-        lat_var.units = "degrees_north"
-        lon_var = handle.createVariable("lon", "f4", ("lon",))
-        lon_var[:] = lon
-        lon_var.units = "degrees_east"
-        for name, values in (("u10", u), ("v10", v)):
-            var = handle.createVariable(
-                name,
-                "f4",
-                ("initial_time", "lead_hour", "ensemble", "lat", "lon"),
-                zlib=True,
-                complevel=2,
-                shuffle=True,
-            )
-            var[:] = values
-            var.units = "m s-1"
-            var.coordinates = "valid_time lat lon"
-            var.long_name = "10 metre eastward wind" if name == "u10" else "10 metre northward wind"
-            var.source = source
-        handle.source = source
-    finally:
-        handle.close()
+        initial_times,
+        lead_hours,
+        lat,
+        lon,
+        source,
+        ensemble_size=u.shape[2],
+    ) as writer:
+        for index in range(len(initial_times)):
+            writer.write_initial(index, u[index], v[index])
 
 
 def _circular_direction_error_deg(pred_u: np.ndarray, pred_v: np.ndarray, true_u: np.ndarray, true_v: np.ndarray) -> float:
@@ -300,6 +374,7 @@ def save_metrics_json(path: Path, payload: Dict[str, Any]) -> None:
 
 __all__ = [
     "configure_storage",
+    "WindForecastNetCDFWriter",
     "write_forecast_netcdf",
     "write_ensemble_netcdf",
     "wind_metrics",

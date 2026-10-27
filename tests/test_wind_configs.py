@@ -19,58 +19,56 @@ def _assert_below(value, root: Path) -> None:
     assert path == root or root in path.parents
 
 
-def test_wind_year_splits_and_storage_paths():
-    step1 = OmegaConf.load(REPO / "conf/config_training_wind_step1_unet.yaml")
-    assert _config_path(step1.paths.raw_data_root) == RAW_DATA_ROOT
-    assert list(step1.dataset.years) == [2019, 2020, 2021, 2022]
-    assert list(step1.validation.dataset.years) == [2023]
-    for value in step1.dataset.low_res_files:
-        _assert_below(value, RAW_DATA_ROOT)
-    _assert_below(step1.dataset.static_low_file, RAW_DATA_ROOT)
-    _assert_below(step1.dataset.stats_path, REPO)
-    _assert_below(step1.training.run_dir, REPO)
-    _assert_below(step1.training.checkpoint_dir, REPO)
-    assert step1.dataset.history_hours == 6
-    assert step1.dataset.forecast_horizon_hours == 72
-    assert step1.validation.dataset.forecast_horizon_hours == 72
-    assert "_72h" in str(step1.dataset.stats_path)
-    assert "_72h" in str(step1.training.run_dir)
-
-    step1_stats = OmegaConf.load(REPO / "conf/config_compute_wind_stats.yaml")
-    assert step1_stats.dataset.forecast_horizon_hours == 72
-    assert "_72h" in str(step1_stats.output_file)
-
-    step1_export = OmegaConf.load(REPO / "conf/config_export_wind_forecasts.yaml")
-    assert step1_export.forecast_hours == 72
-    assert step1_export.dataset.forecast_horizon_hours == 72
-
+def test_wind_joint_configs_use_train_validation_test_year_splits():
     for name in (
-        "config_training_wind_step2_regression.yaml",
-        "config_training_wind_step2_diffusion.yaml",
+        "config_training_wind_regression.yaml",
+        "config_training_wind_diffusion.yaml",
     ):
         cfg = OmegaConf.load(REPO / "conf" / name)
-        assert list(cfg.training.hp.split.train_years) == [2019, 2020, 2021, 2022]
-        assert list(cfg.training.hp.split.validation_years) == [2023]
-        assert list(cfg.training.hp.split.test_years) == [2024]
-        assert _config_path(cfg.paths.raw_data_root) == RAW_DATA_ROOT
-        for value in cfg.dataset.high_res_files:
-            _assert_below(value, RAW_DATA_ROOT)
+        assert list(cfg.dataset.years) == [2019, 2020, 2021, 2022]
+        assert list(cfg.validation.dataset.years) == [2023]
+        assert cfg.dataset.history_hours == 6
+        assert cfg.dataset.forecast_horizon_hours == 72
+        assert cfg.dataset.grid_channels == 4
+        assert "static_low_file" not in cfg.dataset
+        assert "crop_mult" not in cfg.dataset
+        assert all("_HR.nc" in str(path) for path in cfg.dataset.high_res_files)
         _assert_below(cfg.dataset.static_high_file, RAW_DATA_ROOT)
-        assert list(cfg.dataset.leads) == [1, 2, 3, 4, 5, 6]
-        assert cfg.dataset.crop_mult == 16
-        if "diffusion" in name:
-            assert int(cfg.training.hp.patch_shape_y) <= 272
-            assert int(cfg.training.hp.patch_shape_x) <= 320
         _assert_below(cfg.dataset.stats_path, REPO)
-        _assert_below(cfg.training.io.checkpoint_dir, REPO)
-        _assert_below(cfg.training.io.tensorboard_dir, REPO)
+        _assert_below(cfg.training.checkpoint_dir, REPO)
+        _assert_below(cfg.training.tensorboard_dir, REPO)
+
+    inference = OmegaConf.load(REPO / "conf/config_inference_wind_pipeline.yaml")
+    assert list(inference.dataset.years) == [2024]
+    assert list(inference.inference.diffusion_leads) == list(range(1, 73))
+    assert inference.inference.initial_hour == 0
+    assert inference.inference.sampler_num_steps >= 2
+    assert "condition_files" not in inference.dataset
+    assert "static_low_file" not in inference.dataset
 
 
-def test_wind_raw_data_root_is_configurable():
-    cfg = OmegaConf.load(REPO / "conf/config_training_wind_step1_unet.yaml")
-    cfg.paths.raw_data_root = "/datasets/uv10"
-    assert cfg.dataset.low_res_files[0] == "/datasets/uv10/uv10_2019_2022_clipped_LRes.nc"
-    assert cfg.validation.dataset.static_low_file == "/datasets/uv10/fj_LRes.nc"
+def test_stats_and_diffusion_configs_cover_complete_lead_range():
+    stats = OmegaConf.load(REPO / "conf/config_compute_wind_stats.yaml")
+    assert list(stats.train_years) == [2019, 2020, 2021, 2022]
+    assert stats.max_samples == 512
+    assert "_HR.nc" in str(stats.dataset.static_high_file)
+    assert "static_low_file" not in stats.dataset
+
+    diffusion = OmegaConf.load(REPO / "conf/config_training_wind_diffusion.yaml")
+    assert list(diffusion.dataset.leads) == list(range(1, 73))
+    assert diffusion.model.hr_mean_conditioning is True
+    assert diffusion.training.patch_shape_y <= 272
+    assert diffusion.training.patch_shape_x <= 320
+
+
+def test_old_wind_entrypoints_and_condition_files_are_removed():
+    assert not (REPO / "conf/config_training_wind_step1_unet.yaml").exists()
+    assert not (REPO / "conf/config_training_wind_step2_regression.yaml").exists()
+    assert not (REPO / "conf/config_training_wind_step2_diffusion.yaml").exists()
+    assert not (REPO / "conf/config_compute_wind_stats_step2.yaml").exists()
+    assert not (REPO / "conf/config_export_wind_forecasts.yaml").exists()
+    assert not (REPO / "scripts/train_wind_step1.py").exists()
+    assert not (REPO / "scripts/export_wind_forecasts.py").exists()
 
 
 def test_wind_configs_do_not_write_into_home_directory():

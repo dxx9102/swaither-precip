@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Generate CorrDiff wind super-resolution from exported Step-1 conditions."""
+"""Run deterministic regression and residual-diffusion wind inference."""
 
 from __future__ import annotations
 
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Any, List, Sequence
+from typing import List
 
 import hydra
 import numpy as np
-import pandas as pd
 import torch
 from omegaconf import DictConfig, OmegaConf
+from physicsnemo import Module
+from physicsnemo.utils.corrdiff import diffusion_step
+from physicsnemo.utils.diffusion import stochastic_sampler
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
@@ -24,186 +26,200 @@ from swaither.wind_helpers import configure_storage
 
 configure_storage()
 
-from physicsnemo import Module
-from physicsnemo.utils.corrdiff import diffusion_step, regression_step
-from physicsnemo.utils.diffusion import stochastic_sampler
-
-from swaither.datasets.wind import WindSuperResolutionDataset
+from swaither.datasets.wind import WindForecastDataset
+from swaither.models import WindEDMPrecondSuperResolution  # noqa: F401 - checkpoint class registry
+from swaither.wind_helpers import WindForecastNetCDFWriter
 
 
-def _dataset(cfg: DictConfig) -> WindSuperResolutionDataset:
+def _dataset(cfg: DictConfig) -> WindForecastDataset:
     kwargs = OmegaConf.to_container(cfg, resolve=True)
     kwargs.pop("type", None)
-    return WindSuperResolutionDataset(**kwargs)
+    return WindForecastDataset(**kwargs)
 
 
-def _create_output(
-    path: Path,
-    initial_times: Sequence[pd.Timestamp],
-    leads: Sequence[int],
-    lat: np.ndarray,
-    lon: np.ndarray,
-    ensemble: int | None = None,
-) -> tuple[Any, Any, Any]:
-    import netCDF4 as nc
+def _selected_indices(dataset: WindForecastDataset, cfg: DictConfig) -> List[int]:
+    initial_hour = cfg.get("initial_hour")
+    indices = [
+        index
+        for index, timestamp in enumerate(dataset.time())
+        if initial_hour is None or timestamp.hour == int(initial_hour)
+    ]
+    max_initial_times = int(cfg.get("max_initial_times", 0))
+    if max_initial_times > 0:
+        indices = indices[:max_initial_times]
+    return indices
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ds = nc.Dataset(path, "w", format="NETCDF4")
-    ds.createDimension("initial_time", len(initial_times))
-    ds.createDimension("lead_hour", len(leads))
-    if ensemble is not None:
-        ds.createDimension("ensemble", ensemble)
-    ds.createDimension("lat", len(lat))
-    ds.createDimension("lon", len(lon))
-    initial_var = ds.createVariable("initial_time", str, ("initial_time",))
-    initial_var[:] = np.asarray(
-        [pd.Timestamp(value).strftime("%Y-%m-%dT%H:%M:%SZ") for value in initial_times],
-        dtype=object,
+
+def _regression_batch(
+    model: torch.nn.Module,
+    dataset: WindForecastDataset,
+    indices: List[int],
+    device: torch.device,
+) -> torch.Tensor:
+    conditions = np.stack([dataset.condition(index) for index in indices], axis=0)
+    x = torch.from_numpy(conditions).to(device=device, dtype=torch.float32)
+    latent_channels = dataset.forecast_horizon_hours * len(dataset.output_variables)
+    zeros = torch.zeros(
+        (len(indices), latent_channels, *dataset.image_shape()),
+        device=device,
+        dtype=torch.float32,
     )
-    lead_var = ds.createVariable("lead_hour", "i4", ("lead_hour",))
-    lead_var[:] = np.asarray(leads, dtype=np.int32)
-    lead_var.units = "hours"
-    valid_var = ds.createVariable("valid_time", str, ("initial_time", "lead_hour"))
-    valid_var[:] = np.asarray(
+    with torch.inference_mode():
+        return model(zeros, x).float()
+
+
+def _lead_encoding(dataset: WindForecastDataset, lead: int) -> np.ndarray:
+    phase = 2.0 * np.pi * float(lead - 1) / float(dataset.forecast_horizon_hours)
+    return np.asarray(
         [
-            [
-                (pd.Timestamp(initial) + pd.Timedelta(hours=int(lead))).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
+            np.full(dataset.image_shape(), np.sin(phase), np.float32),
+            np.full(dataset.image_shape(), np.cos(phase), np.float32),
+        ]
+    )
+
+
+def _fill_regression_outputs(
+    regression_file: Path,
+    dataset: WindForecastDataset,
+    model: torch.nn.Module,
+    indices: List[int],
+    device: torch.device,
+    batch_size: int,
+) -> None:
+    horizons = list(range(1, dataset.forecast_horizon_hours + 1))
+    initial_times = [dataset.time()[index] for index in indices]
+    with WindForecastNetCDFWriter(
+        regression_file,
+        initial_times,
+        horizons,
+        dataset.latitude(),
+        dataset.longitude(),
+        source="wind-regression",
+    ) as writer:
+        for start in range(0, len(indices), batch_size):
+            end = min(start + batch_size, len(indices))
+            flat = _regression_batch(model, dataset, indices[start:end], device)
+            fields = dataset.forecast_fields(flat.cpu().numpy())
+            physical = dataset.denormalize_output(fields)
+            for local_index in range(end - start):
+                writer.write_initial(
+                    start + local_index,
+                    physical[local_index, :, 0],
+                    physical[local_index, :, 1],
                 )
-                for lead in leads
-            ]
-            for initial in initial_times
-        ],
-        dtype=object,
-    )
-    valid_var.units = "ISO 8601 UTC"
-    lat_var = ds.createVariable("lat", "f4", ("lat",))
-    lat_var[:] = lat
-    lat_var.units = "degrees_north"
-    lon_var = ds.createVariable("lon", "f4", ("lon",))
-    lon_var[:] = lon
-    lon_var.units = "degrees_east"
-    dims = (
-        ("initial_time", "lead_hour", "ensemble", "lat", "lon")
-        if ensemble is not None
-        else ("initial_time", "lead_hour", "lat", "lon")
-    )
-    variables = {}
-    for name in ("u10", "v10"):
-        var = ds.createVariable(name, "f4", dims, zlib=True, complevel=2, shuffle=True)
-        var.units = "m s-1"
-        var.coordinates = "valid_time lat lon"
-        var.long_name = "10 metre eastward wind" if name == "u10" else "10 metre northward wind"
-        variables[name] = var
-    return ds, variables, (initial_var, lead_var, lat_var, lon_var)
+            print(f"regression: {end}/{len(indices)}")
 
 
-def _selected_indices(dataset: WindSuperResolutionDataset, mode: str, cfg: DictConfig) -> List[int]:
-    selected = []
-    diffusion_leads = set(int(value) for value in cfg.inference.diffusion_leads)
-    for index in range(len(dataset)):
-        metadata = dataset.sample_metadata(index)
-        if mode == "diffusion":
-            if metadata["initial_time"].hour != int(cfg.inference.diffusion_initial_hour):
-                continue
-            if metadata["lead_hour"] not in diffusion_leads:
-                continue
-        selected.append(index)
-    return selected
+def _fill_diffusion_outputs(
+    diffusion_file: Path,
+    dataset: WindForecastDataset,
+    regression_model: torch.nn.Module,
+    diffusion_model: torch.nn.Module,
+    indices: List[int],
+    leads: List[int],
+    device: torch.device,
+    cfg: DictConfig,
+) -> None:
+    initial_times = [dataset.time()[index] for index in indices]
+    ensembles = int(cfg.num_ensembles)
+    sampler_steps = int(cfg.sampler_num_steps)
+    if sampler_steps < 2:
+        raise ValueError(
+            "inference.sampler_num_steps must be >= 2; PhysicsNeMo's "
+            "stochastic_sampler divides by (num_steps - 1)"
+        )
+    sampler_fn = partial(
+        stochastic_sampler, num_steps=sampler_steps
+    )
+    rng = np.random.default_rng(int(cfg.seed))
+    with WindForecastNetCDFWriter(
+        diffusion_file,
+        initial_times,
+        leads,
+        dataset.latitude(),
+        dataset.longitude(),
+        source="wind-residual-diffusion",
+        ensemble_size=ensembles,
+    ) as writer:
+        for count, index in enumerate(indices, start=1):
+            flat_mean = _regression_batch(regression_model, dataset, [index], device)
+            mean_fields = dataset.forecast_fields(flat_mean.cpu().numpy())[0]
+            base_condition = dataset.condition(index)
+            for lead_position, lead in enumerate(leads):
+                mean_lead = torch.from_numpy(mean_fields[lead - 1]).unsqueeze(0).to(device)
+                condition = np.concatenate(
+                    [base_condition, _lead_encoding(dataset, lead)], axis=0
+                )
+                condition = torch.from_numpy(condition).unsqueeze(0).to(device)
+                seeds = rng.integers(0, 2**31 - 1, size=ensembles, dtype=np.int64)
+                residual = diffusion_step(
+                    net=diffusion_model,
+                    sampler_fn=sampler_fn,
+                    img_shape=dataset.image_shape(),
+                    img_out_channels=len(dataset.output_variables),
+                    rank_batches=[seeds],
+                    img_lr=condition.expand(ensembles, -1, -1, -1).contiguous(),
+                    rank=0,
+                    device=device,
+                    mean_hr=mean_lead,
+                )
+                full = mean_lead + residual
+                if not torch.isfinite(full).all():
+                    raise FloatingPointError(
+                        f"Diffusion sampling produced a non-finite field for "
+                        f"initial time {initial_times[count - 1]} and lead {lead}"
+                    )
+                physical = dataset.denormalize_output(full.cpu().numpy())
+                if not np.isfinite(physical).all():
+                    raise FloatingPointError(
+                        f"Wind denormalization produced a non-finite field for "
+                        f"initial time {initial_times[count - 1]} and lead {lead}"
+                    )
+                writer.write_lead(count - 1, lead_position, physical[:, 0], physical[:, 1])
+            print(f"diffusion: {count}/{len(indices)}")
 
 
 @hydra.main(version_base="1.2", config_path="../conf", config_name="config_inference_wind_pipeline")
 def main(cfg: DictConfig) -> None:
     configure_storage()
     if not torch.cuda.is_available():
-        print("[WARN] CUDA is unavailable; CorrDiff inference will run on CPU")
+        print("[WARN] CUDA is unavailable; wind inference will run on CPU")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = _dataset(cfg.dataset)
+    indices = _selected_indices(dataset, cfg.inference)
+    if not indices:
+        raise RuntimeError("No initial times selected for wind inference")
     mode = str(cfg.inference.mode)
     if mode not in ("regression", "diffusion", "all"):
         raise ValueError("inference.mode must be regression, diffusion, or all")
 
-    net_reg = None
+    regression_model = None
     if mode in ("regression", "all", "diffusion"):
-        net_reg = Module.from_checkpoint(cfg.checkpoints.regression, {}).eval().to(device)
-        net_reg.requires_grad_(False)
-    net_dif = None
-    if mode in ("diffusion", "all"):
-        net_dif = Module.from_checkpoint(cfg.checkpoints.diffusion, {}).eval().to(device)
-        net_dif.requires_grad_(False)
-
-    img_shape = dataset.image_shape()
-    num_ensembles = int(cfg.inference.num_ensembles)
-    sampler_fn = partial(
-        stochastic_sampler,
-        num_steps=int(cfg.inference.sampler_num_steps),
-    )
-    rng = np.random.default_rng(int(cfg.inference.seed))
-
-    def run_mode(run_mode: str) -> None:
-        indices = _selected_indices(dataset, run_mode, cfg)
-        if not indices:
-            print(f"No samples selected for {run_mode}; skipping")
-            return
-        metadata = [dataset.sample_metadata(index) for index in indices]
-        initial_times = sorted({item["initial_time"] for item in metadata})
-        leads = sorted({int(item["lead_hour"]) for item in metadata})
-        initial_to_index = {value: i for i, value in enumerate(initial_times)}
-        lead_to_index = {value: i for i, value in enumerate(leads)}
-        output_path = Path(
-            cfg.outputs.regression_file if run_mode == "regression" else cfg.outputs.diffusion_file
-        )
-        ds, variables, _ = _create_output(
-            output_path,
-            initial_times,
-            leads,
-            dataset.latitude(),
-            dataset.longitude(),
-            num_ensembles if run_mode == "diffusion" else None,
-        )
-        try:
-            for count, index in enumerate(indices, start=1):
-                item = metadata[count - 1]
-                _y, x = dataset[index]
-                x = x.unsqueeze(0).to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                i = initial_to_index[item["initial_time"]]
-                lead = lead_to_index[int(item["lead_hour"])]
-                mean = regression_step(
-                    net_reg,
-                    x,
-                    latents_shape=(1, 2, img_shape[0], img_shape[1]),
-                )
-                if run_mode == "regression":
-                    physical = dataset.denormalize_output(mean.cpu().numpy())[0]
-                    variables["u10"][i, lead] = physical[0]
-                    variables["v10"][i, lead] = physical[1]
-                else:
-                    seeds = [int(value) for value in rng.integers(0, 2**31 - 1, size=num_ensembles, dtype=np.int64)]
-                    residual = diffusion_step(
-                        net=net_dif,
-                        sampler_fn=sampler_fn,
-                        img_shape=img_shape,
-                        img_out_channels=2,
-                        rank_batches=[seeds],
-                        img_lr=x.expand(num_ensembles, -1, -1, -1).contiguous(),
-                        rank=0,
-                        device=device,
-                        mean_hr=mean,
-                    )
-                    full = mean.repeat(num_ensembles, 1, 1, 1) + residual
-                    physical = dataset.denormalize_output(full.cpu().numpy())
-                    variables["u10"][i, lead] = physical[:, 0]
-                    variables["v10"][i, lead] = physical[:, 1]
-                if count % int(cfg.inference.print_every) == 0 or count == len(indices):
-                    print(f"{run_mode}: {count}/{len(indices)}")
-        finally:
-            ds.close()
-        print(f"Wrote {output_path}")
-
+        regression_model = Module.from_checkpoint(cfg.checkpoints.regression, {})
+        regression_model = regression_model.eval().requires_grad_(False).to(device)
     if mode in ("regression", "all"):
-        run_mode("regression")
+        _fill_regression_outputs(
+            Path(cfg.outputs.regression_file),
+            dataset,
+            regression_model,
+            indices,
+            device,
+            int(cfg.inference.regression_batch_size),
+        )
     if mode in ("diffusion", "all"):
-        run_mode("diffusion")
+        diffusion_model = Module.from_checkpoint(cfg.checkpoints.diffusion, {})
+        diffusion_model = diffusion_model.eval().requires_grad_(False).to(device)
+        leads = [int(lead) for lead in cfg.inference.diffusion_leads]
+        _fill_diffusion_outputs(
+            Path(cfg.outputs.diffusion_file),
+            dataset,
+            regression_model,
+            diffusion_model,
+            indices,
+            leads,
+            device,
+            cfg.inference,
+        )
 
 
 if __name__ == "__main__":

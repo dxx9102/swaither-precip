@@ -1,30 +1,30 @@
 hydra:
   job:
     chdir: false
+    name: wind_joint_stats
 
 paths:
   raw_data_root: ../../data/uv10
   stats: data/stats
 
-mode: step1
-max_samples: 0
+max_samples: 512
 values_per_channel: 1000000
 quantile_low: 0.005
 quantile_high: 0.995
 train_years: [2019, 2020, 2021, 2022]
-output_file: ${paths.stats}/wind_step1_2019_2022_72h.json
+output_file: ${paths.stats}/wind_joint_2019_2022.json
+
 dataset:
-  type: ./swaither/datasets/wind.py::WindForecastDataset
   low_res_files:
     - ${paths.raw_data_root}/uv10_2019_2022_clipped_LRes.nc
-  static_low_file: ${paths.raw_data_root}/fj_LRes.nc
-  input_variables: [u10, v10]
+  high_res_files:
+    - ${paths.raw_data_root}/uv10_2019_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2020_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2021_clipped_HR.nc
+    - ${paths.raw_data_root}/uv10_2022_clipped_HR.nc
+  static_high_file: ${paths.raw_data_root}/fj_HR.nc
+  low_res_variables: [u10, v10]
+  high_res_variables: [u_10m, v_10m]
   output_variables: [u10, v10]
   invariant_variables: [elevation, land_sea_mask]
-  history_hours: 6
-  forecast_horizon_hours: 72
-  years: [2019, 2020, 2021, 2022]
-  grid_channels: 4
-  preload_low: true
-  preload_dtype: float16
-  nan_policy: error
+  engine: netcdf4

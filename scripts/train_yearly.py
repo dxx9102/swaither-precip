@@ -92,8 +92,6 @@ import cartopy.crs as ccrs
 from swaither.models import (
     UNetResidualCorrectorClamped3,
     UNetResidualCorrectorClampedFiLM,
-    WindCorrDiffUNet,
-    WindEDMPrecondSuperResolution,
 )
 
 # and the mass constraints wrappers
@@ -484,18 +482,6 @@ def main(cfg: DictConfig) -> None:
     if hasattr(cfg.model, "model_args"):  # override defaults from config file
         model_args.update(OmegaConf.to_container(cfg.model.model_args))
     physics_model_args = dict(model_args)
-    if cfg.get("task") == "wind":
-        # Wind datasets append coordinates explicitly. The dataset channel count
-        # is therefore kept in N_grid_channels for accounting, while the model
-        # receives model_grid_channels (zero) so PhysicsNeMo does not append a
-        # second set of positional channels.
-        physics_model_args.pop("N_grid_channels", None)
-        if "model_grid_channels" in model_args:
-            physics_model_args["N_grid_channels"] = int(model_args["model_grid_channels"])
-            physics_model_args.pop("model_grid_channels", None)
-        if physics_model_args.get("model_type") == "SongUNet":
-            physics_model_args.pop("gridtype", None)
-
     # ────────────────────────────────────────────────────────────────────────────
     # Sanitize all args to plain Python types so Module.save() can json-dump them:
     import numpy as _np
@@ -533,8 +519,7 @@ def main(cfg: DictConfig) -> None:
         )
 
     elif cfg.model.name == "regression":
-        regression_class = WindCorrDiffUNet if cfg.get("task") == "wind" else UNet
-        model = regression_class(
+        model = UNet(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
             **physics_model_args,
         )
@@ -641,11 +626,7 @@ def main(cfg: DictConfig) -> None:
 
         
     elif cfg.model.name == "diffusion":
-
-        diffusion_class = (
-            WindEDMPrecondSuperResolution if cfg.get("task") == "wind" else EDMPrecondSuperResolution
-        )
-        model = diffusion_class(
+        model = EDMPrecondSuperResolution(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
             **physics_model_args,
         )
@@ -840,38 +821,6 @@ def main(cfg: DictConfig) -> None:
     except Exception:
         cur_nimg = 0
         logger0.info("No previous checkpoint found, starting from scratch.")
-
-    if (
-        cfg.get("task") == "wind"
-        and dist.rank == 0
-        and bool(cfg.training.perf.get("memory_probe", True))
-        and dist.device.type == "cuda"
-    ):
-        img_clean_probe, img_lr_probe, *_ = next(dataset_iterator)
-        img_clean_probe = img_clean_probe.to(dist.device, dtype=torch.float32)
-        img_lr_probe = img_lr_probe.to(dist.device, dtype=torch.float32)
-        optimizer.zero_grad(set_to_none=True)
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(dist.device)
-        with torch.autocast("cuda", dtype=amp_dtype, enabled=enable_amp):
-            probe_loss = loss_fn(
-                net=model,
-                img_clean=img_clean_probe,
-                img_lr=img_lr_probe,
-                augment_pipe=None,
-            ).mean()
-        probe_loss.backward()
-        torch.cuda.synchronize(dist.device)
-        logger0.info(
-            "[MEMORY] CorrDiff one-batch probe: allocated=%.2f GiB reserved=%.2f GiB peak=%.2f GiB",
-            torch.cuda.memory_allocated(dist.device) / 1024**3,
-            torch.cuda.memory_reserved(dist.device) / 1024**3,
-            torch.cuda.max_memory_allocated(dist.device) / 1024**3,
-        )
-        optimizer.zero_grad(set_to_none=True)
-        model.train()
-        dataset_iterator = iter(train_loader)
-
 
     # # MY CHANGES --- Epoch / step bookkeeping ---------------------------------
     steps_per_epoch = math.ceil(len(train_ds) / cfg.training.hp.total_batch_size)

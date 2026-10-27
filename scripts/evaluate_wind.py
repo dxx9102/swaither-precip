@@ -56,7 +56,7 @@ def main() -> None:
     parser.add_argument("--forecast-u", default="u10")
     parser.add_argument("--forecast-v", default="v10")
     parser.add_argument("--ensemble", default=None, help="Optional ensemble NetCDF")
-    parser.add_argument("--low-condition", default=None, help="Optional Step-1 condition for bilinear baseline")
+    parser.add_argument("--low-condition", default=None, help="Optional low-resolution field for the bilinear baseline")
     parser.add_argument("--persistence", action="store_true", help="Add last-observation baseline")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -88,8 +88,12 @@ def main() -> None:
                     continue
                 pred_u = np.asarray(forecast_u.isel(lead_hour=lead_index).values, dtype=np.float32)[keep]
                 pred_v = np.asarray(forecast_v.isel(lead_hour=lead_index).values, dtype=np.float32)[keep]
-                true_u = truth_index.read_many(args.truth_u, positions, lat, lon, engine="netcdf4")
-                true_v = truth_index.read_many(args.truth_v, positions, lat, lon, engine="netcdf4")
+                true_u = truth_index.read_variables_many(
+                    [args.truth_u], positions, lat, lon, engine="netcdf4"
+                )[:, 0]
+                true_v = truth_index.read_variables_many(
+                    [args.truth_v], positions, lat, lon, engine="netcdf4"
+                )[:, 0]
                 per_lead[f"lead_{lead}"] = wind_metrics(pred_u, pred_v, true_u, true_v)
 
                 if args.persistence:
@@ -100,8 +104,12 @@ def main() -> None:
                             initial_positions.append(initial_position)
                             persistence_keep.append(kept_position)
                     if initial_positions:
-                        pers_u = truth_index.read_many(args.truth_u, initial_positions, lat, lon, engine="netcdf4")
-                        pers_v = truth_index.read_many(args.truth_v, initial_positions, lat, lon, engine="netcdf4")
+                        pers_u = truth_index.read_variables_many(
+                            [args.truth_u], initial_positions, lat, lon, engine="netcdf4"
+                        )[:, 0]
+                        pers_v = truth_index.read_variables_many(
+                            [args.truth_v], initial_positions, lat, lon, engine="netcdf4"
+                        )[:, 0]
                         persistence[f"lead_{lead}"] = wind_metrics(
                             pers_u,
                             pers_v,
@@ -175,8 +183,12 @@ def main() -> None:
                     1,
                     0,
                 )
-                true_u = truth_index.read_many(args.truth_u, positions, ensemble_lat, ensemble_lon, engine="netcdf4")
-                true_v = truth_index.read_many(args.truth_v, positions, ensemble_lat, ensemble_lon, engine="netcdf4")
+                true_u = truth_index.read_variables_many(
+                    [args.truth_u], positions, ensemble_lat, ensemble_lon, engine="netcdf4"
+                )[:, 0]
+                true_v = truth_index.read_variables_many(
+                    [args.truth_v], positions, ensemble_lat, ensemble_lon, engine="netcdf4"
+                )[:, 0]
                 spread_u, skill_u = ensemble_spread_skill(members_u, true_u)
                 spread_v, skill_v = ensemble_spread_skill(members_v, true_v)
                 ensemble_metrics[f"lead_{int(lead)}"] = {

@@ -14,17 +14,16 @@ This repository contains the code and configurations for **SwAIther-Precip**, a 
 
 ## Wind pipeline
 
-The repository also includes an independent hourly 10 m wind workflow. Step 1
-is a deterministic six-hour-history U-Net that predicts normalized persistence
-residuals for all 72 lead hours in one forward pass. Step 2 retains the
-CorrDiff regression U-Net and EDM
-residual diffusion structure while changing the physical fields to signed
-two-channel `u10/v10` wind. Training uses 2019-2022, validation uses 2023, and
-testing uses 2024.
+The repository also includes an independent hourly 10 m wind workflow. A single
+deterministic U-Net maps six hours of low-resolution `u10/v10` history directly
+to 72 hours of full-domain high-resolution absolute wind in one forward pass. A
+conditional EDM diffusion model then learns the two-channel detail residual for
+each lead relative to the frozen U-Net output. Training uses 2019-2022,
+validation uses 2023, and testing uses 2024.
 
 Wind inputs default to `../../data/uv10/`; override `paths.raw_data_root` in a
 wind config to select another prepared-data directory. Artifacts, checkpoints,
-conditions, statistics, logs, and caches are stored inside the project. See
+statistics, logs, and caches are stored inside the project. See
 [`docs/wind_pipeline.md`](docs/wind_pipeline.md) for data contracts, commands,
 GPU memory-probe guidance, output dimensions, evaluation, and known limitations.
 The existing precipitation workflow remains available unchanged.
