@@ -147,5 +147,21 @@ forward/backward memory probes.  The smoke job trains one regression and one
 diffusion sample, reloads both checkpoints, runs inference, and evaluates both
 NetCDF outputs.
 
+Training validation subsets are selected by a fixed-seed uniform random draw
+across the complete validation-year dataset.  To compare the saved best
+checkpoint with the final checkpoint on the same 512 uniformly selected 2023
+initial times:
+
+```bash
+yhbatch -p a800x_595 -G 1 -c 8 \
+  -o ./outputs/slurm/wind_regression_epochs_eval.out \
+  scripts/yhbatch_evaluate_wind_regression_epochs.sh
+```
+
+The comparison is written to
+`outputs/wind_regression/uniform_2023_checkpoint_comparison.json`.  Pass
+`--samples 0` to evaluate every valid 2023 initial time instead of a 512-sample
+subset.
+
 Old Step-1/Step-2 checkpoints are not compatible with the new 144-channel
 regression output or the 20-channel-plus-mean diffusion condition.

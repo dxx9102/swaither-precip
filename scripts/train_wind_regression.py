@@ -30,7 +30,7 @@ configure_storage()
 
 from swaither.datasets.wind import WindForecastDataset
 from swaither.models import WindForecastUNet
-from swaither.wind_helpers import wind_metrics
+from swaither.wind_helpers import uniform_random_sample_indices, wind_metrics
 
 
 def _seed_everything(seed: int) -> None:
@@ -203,10 +203,18 @@ def main(cfg: DictConfig) -> None:
         if max_train <= 0 or max_train >= len(train_dataset)
         else Subset(train_dataset, range(max_train))
     )
-    val_data = (
-        validation_dataset
-        if max_val <= 0 or max_val >= len(validation_dataset)
-        else Subset(validation_dataset, range(max_val))
+    validation_seed = int(cfg.validation.get("sample_seed", cfg.training.seed))
+    validation_indices = uniform_random_sample_indices(
+        len(validation_dataset), max_val, validation_seed
+    )
+    val_data = Subset(validation_dataset, validation_indices.tolist())
+    validation_times = validation_dataset.time()
+    print(
+        f"[validation] uniformly sampled {len(validation_indices)}/"
+        f"{len(validation_dataset)} samples with seed={validation_seed}; "
+        f"range={validation_times[int(validation_indices[0])]}.."
+        f"{validation_times[int(validation_indices[-1])]}",
+        flush=True,
     )
     workers = int(cfg.training.num_workers)
     loader_kwargs = {

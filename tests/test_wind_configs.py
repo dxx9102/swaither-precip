@@ -30,6 +30,7 @@ def test_wind_joint_configs_use_train_validation_test_year_splits():
         assert cfg.dataset.history_hours == 6
         assert cfg.dataset.forecast_horizon_hours == 72
         assert cfg.dataset.grid_channels == 4
+        assert cfg.validation.sample_seed == 42
         assert "static_low_file" not in cfg.dataset
         assert "crop_mult" not in cfg.dataset
         assert all("_HR.nc" in str(path) for path in cfg.dataset.high_res_files)

@@ -38,6 +38,7 @@ dataset:
 validation:
   batch_size: 1
   max_samples: 64
+  sample_seed: 42
   dataset:
     type: ./swaither/datasets/wind.py::WindForecastDataset
     low_res_files:

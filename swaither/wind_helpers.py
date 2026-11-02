@@ -59,6 +59,29 @@ def configure_storage(root: Optional[Path] = None) -> Dict[str, Path]:
     return paths
 
 
+def uniform_random_sample_indices(
+    length: int, sample_count: int, seed: int = 42
+) -> np.ndarray:
+    """Select a deterministic, uniformly random subset without replacement.
+
+    ``sample_count <= 0`` or a count at least as large as ``length`` selects all
+    indices. Returned indices are sorted so evaluation runs in chronological
+    order while still covering the full input range uniformly at random.
+    """
+    length = int(length)
+    sample_count = int(sample_count)
+    if length < 0:
+        raise ValueError("length must be non-negative")
+    if length == 0:
+        return np.empty(0, dtype=np.int64)
+    if sample_count <= 0 or sample_count >= length:
+        return np.arange(length, dtype=np.int64)
+    rng = np.random.default_rng(int(seed))
+    return np.sort(
+        rng.choice(length, size=sample_count, replace=False).astype(np.int64)
+    )
+
+
 def _netcdf_initialize(path: Path, dimensions: Dict[str, int]) -> Any:
     import netCDF4 as nc
 
@@ -374,6 +397,7 @@ def save_metrics_json(path: Path, payload: Dict[str, Any]) -> None:
 
 __all__ = [
     "configure_storage",
+    "uniform_random_sample_indices",
     "WindForecastNetCDFWriter",
     "write_forecast_netcdf",
     "write_ensemble_netcdf",

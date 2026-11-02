@@ -15,6 +15,7 @@ from swaither.datasets.wind import (
     load_channel_stats,
     parse_hourly_times,
 )
+from swaither.wind_helpers import uniform_random_sample_indices
 
 
 def _grid(size: int, end: float) -> np.ndarray:
@@ -114,6 +115,26 @@ def test_parse_icon_hourly_times_and_reject_off_hour():
         parse_hourly_times(np.array([20240101.02]))
     with pytest.raises(ValueError, match="exact hour"):
         parse_hourly_times(np.array(["2024-01-01T00:30:00Z"]))
+
+
+def test_uniform_random_sample_indices_are_deterministic_and_unique():
+    first = uniform_random_sample_indices(10_000, 512, seed=42)
+    repeated = uniform_random_sample_indices(10_000, 512, seed=42)
+    alternative = uniform_random_sample_indices(10_000, 512, seed=43)
+
+    assert first.shape == (512,)
+    assert np.all(first == repeated)
+    assert not np.array_equal(first, alternative)
+    assert np.all(np.diff(first) > 0)
+    assert len(np.unique(first)) == 512
+    assert int(first.min()) >= 0
+    assert int(first.max()) < 10_000
+    np.testing.assert_array_equal(
+        uniform_random_sample_indices(10, 0, seed=42), np.arange(10)
+    )
+    np.testing.assert_array_equal(
+        uniform_random_sample_indices(10, 10, seed=42), np.arange(10)
+    )
 
 
 def test_joint_dataset_returns_hr_absolute_target_and_high_only_static(tmp_path):

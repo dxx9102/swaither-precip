@@ -25,7 +25,7 @@ for path in (_REPO_ROOT, _SCRIPT_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from swaither.wind_helpers import configure_storage
+from swaither.wind_helpers import configure_storage, uniform_random_sample_indices
 
 configure_storage()
 
@@ -147,10 +147,18 @@ def main(cfg: DictConfig) -> None:
         if max_train <= 0 or max_train >= len(train_dataset)
         else Subset(train_dataset, range(max_train))
     )
-    val_data = (
-        validation_dataset
-        if max_val <= 0 or max_val >= len(validation_dataset)
-        else Subset(validation_dataset, range(max_val))
+    validation_seed = int(cfg.validation.get("sample_seed", cfg.training.seed))
+    validation_indices = uniform_random_sample_indices(
+        len(validation_dataset), max_val, validation_seed
+    )
+    val_data = Subset(validation_dataset, validation_indices.tolist())
+    validation_times = validation_dataset.time()
+    print(
+        f"[validation] uniformly sampled {len(validation_indices)}/"
+        f"{len(validation_dataset)} (initial_time, lead) items with "
+        f"seed={validation_seed}; range={validation_times[int(validation_indices[0])]}.."
+        f"{validation_times[int(validation_indices[-1])]}",
+        flush=True,
     )
     train_loader = _loader(train_data, cfg.training, device, shuffle=True)
     val_loader = _loader(val_data, cfg.validation, device, shuffle=False)
