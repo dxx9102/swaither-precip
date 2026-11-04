@@ -77,16 +77,34 @@ The default diffusion checkpoint is:
 outputs/wind_diffusion/checkpoints/WindEDMPrecondSuperResolution.best.mdlus
 ```
 
-On Slurm, use the job scripts.  They explicitly change to the repository
-directory and activate the required environment:
+On Slurm, submit through the timestamped wrappers.  Each wrapper generates one
+submission timestamp, uses it for both the Slurm log and training artifacts, and
+marks the timestamped run as `latest` only after training succeeds:
 
 ```bash
 yhbatch -p a800x_595 -G 1 -o ./outputs/slurm/wind_prepare.out \
   scripts/yhbatch_wind_prepare_data.sh
-yhbatch -p a800x_595 -G 1 -o ./outputs/slurm/wind_regression_train.out \
-  scripts/yhbatch_train_wind_regression.sh
-yhbatch -p a800x_595 -G 1 -o ./outputs/slurm/wind_diffusion_train.out \
-  scripts/yhbatch_train_wind_diffusion.sh
+scripts/submit_yhbatch_train_wind_regression.sh
+scripts/submit_yhbatch_train_wind_diffusion.sh
+```
+
+For example, a submission at `2026-11-04 16:30:00` writes
+`outputs/slurm/wind_regression_train_2026-11-04_16-30-00.out` and places the
+run under `outputs/wind_regression/2026-11-04_16-30-00/`.  Set `RUN_STAMP` to
+override the generated value.  The timestamped wrappers manage
+`hydra.run.dir`, `training.run_dir`, `training.checkpoint_dir`, and
+`training.tensorboard_dir`; passing different values for those four keys is
+rejected.  Existing fixed paths under
+`outputs/wind_regression/checkpoints/` and
+`outputs/wind_diffusion/checkpoints/` remain the defaults for direct Python
+training, inference, and checkpoint evaluation.
+
+To opt a timestamped diffusion run into the newest successfully completed
+regression run:
+
+```bash
+scripts/submit_yhbatch_train_wind_diffusion.sh \
+  training.regression_checkpoint=outputs/wind_regression/latest/checkpoints/WindForecastUNet.best.mdlus
 ```
 
 ## Inference

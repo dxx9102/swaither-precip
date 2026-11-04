@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit with:
-#   yhbatch -p a800x_595 -G 1 -o ./outputs/slurm/wind_diffusion_train.out scripts/yhbatch_train_wind_diffusion.sh
+#   scripts/submit_yhbatch_train_wind_diffusion.sh [Hydra overrides]
 set -euo pipefail
 
 repo_root="/XYFS02/HDD_POOL/cmafj_klli/cmafj_klli_1/dx/swaither-precip"
@@ -12,6 +12,28 @@ source scripts/wind_env.sh
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
+source scripts/yhbatch_wind_common.sh
+run_stamp="$(wind_resolve_run_stamp)"
+wind_reject_path_overrides "$@"
+run_dir="$(wind_training_run_dir "${repo_root}" wind_diffusion "${run_stamp}")"
+latest_path="${repo_root}/outputs/wind_diffusion/latest"
+if [[ -e "${run_dir}" ]]; then
+  printf 'Timestamped diffusion run already exists: %s\n' "${run_dir}" >&2
+  exit 2
+fi
+if [[ -e "${latest_path}" && ! -L "${latest_path}" ]]; then
+  printf 'Refusing to replace non-symlink latest path: %s\n' "${latest_path}" >&2
+  exit 2
+fi
+
 python -u scripts/train_wind_diffusion.py \
   --config-name=config_training_wind_diffusion.yaml \
+  hydra.run.dir="${run_dir}" \
+  training.run_dir="${run_dir}" \
+  training.checkpoint_dir="${run_dir}/checkpoints" \
+  training.tensorboard_dir="${run_dir}/tensorboard" \
   "$@"
+
+wind_mark_latest "${latest_path}" "${run_stamp}"
+printf 'Diffusion artifacts: %s\nLatest link: %s -> %s\n' \
+  "${run_dir}" "${latest_path}" "${run_stamp}"
