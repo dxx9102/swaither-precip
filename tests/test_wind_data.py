@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 import torch
 import xarray as xr
+from torch.utils.data import DataLoader
 
 from swaither.datasets.wind import (
     FileTimeIndex,
@@ -15,7 +16,11 @@ from swaither.datasets.wind import (
     load_channel_stats,
     parse_hourly_times,
 )
-from swaither.wind_helpers import uniform_random_sample_indices
+from swaither.wind_helpers import (
+    EpochRandomSubsetSampler,
+    resume_epoch_and_step,
+    uniform_random_sample_indices,
+)
 
 
 def _grid(size: int, end: float) -> np.ndarray:
@@ -135,6 +140,53 @@ def test_uniform_random_sample_indices_are_deterministic_and_unique():
     np.testing.assert_array_equal(
         uniform_random_sample_indices(10, 10, seed=42), np.arange(10)
     )
+
+
+def test_epoch_random_subset_sampler_is_reproducible_and_epoch_dependent():
+    sampler = EpochRandomSubsetSampler(10_000, 512, seed=42)
+    first = list(sampler)
+    repeated = list(sampler)
+
+    assert len(first) == 512
+    assert first == repeated
+    assert len(set(first)) == 512
+    assert min(first) >= 0
+    assert max(first) < 10_000
+    loaded = [
+        int(value)
+        for batch in DataLoader(range(10_000), batch_size=8, sampler=sampler)
+        for value in batch
+    ]
+    assert loaded == first
+
+    sampler.set_epoch(1)
+    second = list(sampler)
+    assert second != first
+    assert len(set(second)) == 512
+
+
+def test_epoch_random_subset_sampler_full_mode_and_resume_offset():
+    sampler = EpochRandomSubsetSampler(32, 0, seed=7)
+    indices = list(sampler)
+    assert sorted(indices) == list(range(32))
+    assert len(indices) == len(set(indices))
+    assert len(EpochRandomSubsetSampler(32, 100, seed=7)) == 32
+
+    sampler.set_epoch(3)
+    full_epoch = list(sampler)
+    sampler.set_start_index(7)
+    assert list(sampler) == full_epoch[7:]
+    assert len(sampler) == 25
+
+
+def test_resume_epoch_and_step_supports_new_and_legacy_checkpoints():
+    assert resume_epoch_and_step({"epoch": 4}) == (5, 0)
+    assert resume_epoch_and_step(
+        {"epoch": 4, "epoch_complete": True, "next_batch_step": 500}
+    ) == (5, 0)
+    assert resume_epoch_and_step(
+        {"epoch": 4, "epoch_complete": False, "next_batch_step": 504}
+    ) == (4, 504)
 
 
 def test_joint_dataset_returns_hr_absolute_target_and_high_only_static(tmp_path):

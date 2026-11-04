@@ -88,7 +88,9 @@ training:
   grad_clip: 1.0
   amp: true
   memory_probe: true
-  max_samples: 0
+  epoch_samples: 2048
+  log_every_steps: 10
+  checkpoint_every_steps: 500
   patch_shape_y: 272
   patch_shape_x: 320
   patch_num: 1

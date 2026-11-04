@@ -60,6 +60,10 @@ def test_stats_and_diffusion_configs_cover_complete_lead_range():
     assert diffusion.model.hr_mean_conditioning is True
     assert diffusion.training.patch_shape_y <= 272
     assert diffusion.training.patch_shape_x <= 320
+    assert diffusion.training.epoch_samples == 2048
+    assert diffusion.training.log_every_steps == 10
+    assert diffusion.training.checkpoint_every_steps == 500
+    assert "max_samples" not in diffusion.training
 
 
 def test_old_wind_entrypoints_and_condition_files_are_removed():

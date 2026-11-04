@@ -82,6 +82,76 @@ def uniform_random_sample_indices(
     )
 
 
+class EpochRandomSubsetSampler:
+    """Deterministic random full epochs or fixed-size random subsets.
+
+    The selected indices stay in random order so ``DataLoader(shuffle=False)``
+    does not undo the shuffling.  ``set_epoch`` gives each epoch a reproducible
+    drawing, while ``set_start_index`` supports resuming a partially completed
+    epoch from an atomic checkpoint.
+    """
+
+    def __init__(self, length: int, sample_count: int, seed: int = 42) -> None:
+        self.length = int(length)
+        if self.length < 1:
+            raise ValueError("length must be positive")
+        requested = int(sample_count)
+        self.sample_size = (
+            self.length if requested <= 0 or requested >= self.length else requested
+        )
+        self.seed = int(seed)
+        self.epoch = 0
+        self.start_index = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        epoch = int(epoch)
+        if epoch < 0:
+            raise ValueError("epoch must be non-negative")
+        self.epoch = epoch
+        self.start_index = 0
+
+    def set_start_index(self, start_index: int) -> None:
+        start_index = int(start_index)
+        if not 0 <= start_index <= self.sample_size:
+            raise ValueError("start_index must be within one epoch's sample range")
+        self.start_index = start_index
+
+    def _indices(self) -> np.ndarray:
+        epoch_seed = (self.seed + self.epoch) % (2**63)
+        rng = np.random.default_rng(epoch_seed)
+        if self.sample_size == self.length:
+            return rng.permutation(self.length).astype(np.int64)
+        return rng.choice(self.length, size=self.sample_size, replace=False).astype(
+            np.int64
+        )
+
+    def __iter__(self):
+        yield from self._indices()[self.start_index :]
+
+    def __len__(self) -> int:
+        return self.sample_size - self.start_index
+
+
+def resume_epoch_and_step(state: Dict[str, Any]) -> Tuple[int, int]:
+    """Return the epoch and completed batch step from a checkpoint state.
+
+    Checkpoints created before per-batch recovery stored only ``epoch`` after a
+    completed epoch, so missing recovery fields default to a completed epoch.
+    """
+
+    if "epoch" not in state:
+        raise KeyError("checkpoint state has no 'epoch' field")
+    epoch = int(state["epoch"])
+    if epoch < 0:
+        raise ValueError("checkpoint epoch must be non-negative")
+    if bool(state.get("epoch_complete", True)):
+        return epoch + 1, 0
+    next_step = int(state.get("next_batch_step", 0))
+    if next_step < 0:
+        raise ValueError("checkpoint next_batch_step must be non-negative")
+    return epoch, next_step
+
+
 def _netcdf_initialize(path: Path, dimensions: Dict[str, int]) -> Any:
     import netCDF4 as nc
 
@@ -398,6 +468,8 @@ def save_metrics_json(path: Path, payload: Dict[str, Any]) -> None:
 __all__ = [
     "configure_storage",
     "uniform_random_sample_indices",
+    "EpochRandomSubsetSampler",
+    "resume_epoch_and_step",
     "WindForecastNetCDFWriter",
     "write_forecast_netcdf",
     "write_ensemble_netcdf",

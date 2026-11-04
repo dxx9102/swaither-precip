@@ -47,7 +47,7 @@ python -u scripts/train_wind_diffusion.py \
   model.model_args.model_channels=4 \
   'model.model_args.channel_mult=[1,2,2]' \
   training.epochs=1 \
-  training.max_samples=1 \
+  training.epoch_samples=1 \
   training.gradient_accumulation_steps=1 \
   training.num_workers=0 \
   training.memory_probe=false \
