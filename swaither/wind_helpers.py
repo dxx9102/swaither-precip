@@ -82,6 +82,60 @@ def uniform_random_sample_indices(
     )
 
 
+def _optional_timestamp(value: Any, name: str) -> Optional[pd.Timestamp]:
+    if value is None:
+        return None
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert(None)
+    if pd.isna(timestamp):
+        raise ValueError(f"{name} must be a valid timestamp or null")
+    return timestamp
+
+
+def select_initial_indices(
+    times: Sequence[pd.Timestamp],
+    *,
+    initial_hour: Optional[int] = None,
+    start: Any = None,
+    end: Any = None,
+    max_initial_times: int = 0,
+) -> np.ndarray:
+    """Select initial-time positions by hour and an inclusive date range.
+
+    Dataset construction remains responsible for requiring complete history and
+    target windows. This helper only applies the explicitly configured test-set
+    hour and date filters, then returns the requested leading positions.
+    """
+    parsed_times = pd.DatetimeIndex([pd.Timestamp(value) for value in times])
+    if parsed_times.tz is not None:
+        parsed_times = parsed_times.tz_convert(None)
+
+    hour = None if initial_hour is None else int(initial_hour)
+    if hour is not None and not 0 <= hour <= 23:
+        raise ValueError("initial_hour must be in [0, 23] or null")
+    start_time = _optional_timestamp(start, "initial_time_start")
+    end_time = _optional_timestamp(end, "initial_time_end")
+    if start_time is not None and end_time is not None and start_time > end_time:
+        raise ValueError("initial_time_start must be no later than initial_time_end")
+    limit = int(max_initial_times)
+    if limit < 0:
+        raise ValueError("max_initial_times must be non-negative")
+
+    indices = []
+    for index, timestamp in enumerate(parsed_times):
+        if hour is not None and timestamp.hour != hour:
+            continue
+        if start_time is not None and timestamp < start_time:
+            continue
+        if end_time is not None and timestamp > end_time:
+            continue
+        indices.append(index)
+    if limit > 0:
+        indices = indices[:limit]
+    return np.asarray(indices, dtype=np.int64)
+
+
 class EpochRandomSubsetSampler:
     """Deterministic random full epochs or fixed-size random subsets.
 
@@ -468,6 +522,7 @@ def save_metrics_json(path: Path, payload: Dict[str, Any]) -> None:
 __all__ = [
     "configure_storage",
     "uniform_random_sample_indices",
+    "select_initial_indices",
     "EpochRandomSubsetSampler",
     "resume_epoch_and_step",
     "WindForecastNetCDFWriter",

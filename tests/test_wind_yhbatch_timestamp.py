@@ -31,6 +31,7 @@ def test_timestamped_yhbatch_scripts_parse_and_are_executable():
         "yhbatch_train_wind_diffusion.sh",
         "submit_yhbatch_train_wind_regression.sh",
         "submit_yhbatch_train_wind_diffusion.sh",
+        "yhbatch_evaluate_wind_test.sh",
     ):
         path = REPO / "scripts" / name
         subprocess.run(["bash", "-n", str(path)], check=True)
@@ -39,6 +40,7 @@ def test_timestamped_yhbatch_scripts_parse_and_are_executable():
         "yhbatch_train_wind_diffusion.sh",
         "submit_yhbatch_train_wind_regression.sh",
         "submit_yhbatch_train_wind_diffusion.sh",
+        "yhbatch_evaluate_wind_test.sh",
     ):
         assert os.access(REPO / "scripts" / name, os.X_OK)
 

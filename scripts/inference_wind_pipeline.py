@@ -28,7 +28,7 @@ configure_storage()
 
 from swaither.datasets.wind import WindForecastDataset
 from swaither.models import WindEDMPrecondSuperResolution  # noqa: F401 - checkpoint class registry
-from swaither.wind_helpers import WindForecastNetCDFWriter
+from swaither.wind_helpers import WindForecastNetCDFWriter, select_initial_indices
 
 
 def _dataset(cfg: DictConfig) -> WindForecastDataset:
@@ -38,16 +38,14 @@ def _dataset(cfg: DictConfig) -> WindForecastDataset:
 
 
 def _selected_indices(dataset: WindForecastDataset, cfg: DictConfig) -> List[int]:
-    initial_hour = cfg.get("initial_hour")
-    indices = [
-        index
-        for index, timestamp in enumerate(dataset.time())
-        if initial_hour is None or timestamp.hour == int(initial_hour)
-    ]
-    max_initial_times = int(cfg.get("max_initial_times", 0))
-    if max_initial_times > 0:
-        indices = indices[:max_initial_times]
-    return indices
+    selected = select_initial_indices(
+        dataset.time(),
+        initial_hour=cfg.get("initial_hour"),
+        start=cfg.get("initial_time_start"),
+        end=cfg.get("initial_time_end"),
+        max_initial_times=int(cfg.get("max_initial_times", 0)),
+    )
+    return selected.tolist()
 
 
 def _regression_batch(

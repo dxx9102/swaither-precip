@@ -43,6 +43,8 @@ def test_wind_joint_configs_use_train_validation_test_year_splits():
     assert list(inference.dataset.years) == [2024]
     assert list(inference.inference.diffusion_leads) == list(range(1, 73))
     assert inference.inference.initial_hour == 0
+    assert str(inference.inference.initial_time_start) == "2024-01-02T00:00:00"
+    assert str(inference.inference.initial_time_end) == "2024-10-28T00:00:00"
     assert inference.inference.sampler_num_steps >= 2
     assert "condition_files" not in inference.dataset
     assert "static_low_file" not in inference.dataset

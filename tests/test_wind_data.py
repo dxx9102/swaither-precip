@@ -19,6 +19,7 @@ from swaither.datasets.wind import (
 from swaither.wind_helpers import (
     EpochRandomSubsetSampler,
     resume_epoch_and_step,
+    select_initial_indices,
     uniform_random_sample_indices,
 )
 
@@ -120,6 +121,34 @@ def test_parse_icon_hourly_times_and_reject_off_hour():
         parse_hourly_times(np.array([20240101.02]))
     with pytest.raises(ValueError, match="exact hour"):
         parse_hourly_times(np.array(["2024-01-01T00:30:00Z"]))
+
+
+def test_select_initial_indices_uses_inclusive_2024_test_window():
+    times = pd.date_range("2024-01-01", "2024-10-31", freq="D")
+    selected = select_initial_indices(
+        times,
+        initial_hour=0,
+        start="2024-01-02T00:00:00",
+        end="2024-10-28T00:00:00",
+    )
+    assert len(selected) == 301
+    assert times[int(selected[0])] == pd.Timestamp("2024-01-02 00:00")
+    assert times[int(selected[-1])] == pd.Timestamp("2024-10-28 00:00")
+    assert pd.Timestamp("2024-01-01 00:00") not in times[selected]
+    assert pd.Timestamp("2024-10-29 00:00") not in times[selected]
+    assert len(
+        select_initial_indices(
+            times,
+            initial_hour=0,
+            start="2024-01-02T00:00:00",
+            end="2024-10-28T00:00:00",
+            max_initial_times=2,
+        )
+    ) == 2
+    with pytest.raises(ValueError, match="no later"):
+        select_initial_indices(
+            times, start="2024-10-28T00:00:00", end="2024-01-02T00:00:00"
+        )
 
 
 def test_uniform_random_sample_indices_are_deterministic_and_unique():

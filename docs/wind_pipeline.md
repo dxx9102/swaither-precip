@@ -149,6 +149,55 @@ python scripts/evaluate_wind.py \
   --output outputs/wind_inference/metrics_2024.json
 ```
 
+For the 2024 test window, use staged inference and evaluation.  The configured
+daily 00 UTC range is `2024-01-02` through `2024-10-28`: the earlier date needs
+the 2024 low-resolution file's missing 2024-01-01 history, and later dates do not
+have a complete 72-hour high-resolution target window.  This produces 301
+initial times.  Run the deterministic regression stage first:
+
+```bash
+yhbatch --export=ALL,EVAL_STAGE=regression -p a800x_595 -G 1 \
+  -o ./outputs/slurm/wind_evaluate_regression_2024.out \
+  scripts/yhbatch_evaluate_wind_test.sh
+```
+
+Then run diffusion using the same regression checkpoint for its deterministic
+mean and residual ensemble:
+
+```bash
+yhbatch --export=ALL,EVAL_STAGE=diffusion -p a800x_595 -G 1 \
+  -o ./outputs/slurm/wind_evaluate_diffusion_2024.out \
+  scripts/yhbatch_evaluate_wind_test.sh
+```
+
+`EVAL_STAGE=all` runs both stages in one GPU job.  The wrapper defaults to
+`outputs/wind_regression/checkpoints/WindForecastUNet.best.mdlus` and
+`outputs/wind_diffusion/latest/checkpoints/WindEDMPrecondSuperResolution.best.mdlus`;
+override them with `REGRESSION_CHECKPOINT` and `DIFFUSION_CHECKPOINT`.  Set
+`EVAL_OUTPUT_DIR` to isolate a run.  Stage outputs are:
+
+```text
+outputs/wind_inference/test_2024/{regression.nc,diffusion.nc}
+outputs/wind_inference/test_2024/metrics/regression.json
+outputs/wind_inference/test_2024/metrics/diffusion.json
+outputs/wind_inference/test_2024/metrics/comparison.json
+```
+
+The comparison uses `diffusion ensemble mean - regression` for deterministic
+metrics and retains CRPS, spread, skill, and spread/skill for the diffusion
+ensemble.  The lower-level evaluator remains available for custom runs:
+
+```bash
+python scripts/evaluate_wind.py \
+  --forecast outputs/wind_inference/test_2024/regression.nc \
+  --ensemble outputs/wind_inference/test_2024/diffusion.nc \
+  --truth ../../data/uv10/uv10_2024_clipped_HR.nc \
+  --truth-u u_10m --truth-v v_10m \
+  --regression-output outputs/wind_inference/test_2024/metrics/regression.json \
+  --diffusion-output outputs/wind_inference/test_2024/metrics/diffusion.json \
+  --comparison-output outputs/wind_inference/test_2024/metrics/comparison.json
+```
+
 ## Verification
 
 ```bash
