@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from functools import partial
 from pathlib import Path
 from typing import List
@@ -76,6 +77,17 @@ def _lead_encoding(dataset: WindForecastDataset, lead: int) -> np.ndarray:
     )
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(float(seconds), 0.0)
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    minutes, seconds = divmod(seconds, 60.0)
+    if minutes < 60.0:
+        return f"{int(minutes)}m{seconds:04.1f}s"
+    hours, minutes = divmod(minutes, 60.0)
+    return f"{int(hours)}h{int(minutes):02d}m"
+
+
 def _fill_regression_outputs(
     regression_file: Path,
     dataset: WindForecastDataset,
@@ -86,6 +98,7 @@ def _fill_regression_outputs(
 ) -> None:
     horizons = list(range(1, dataset.forecast_horizon_hours + 1))
     initial_times = [dataset.time()[index] for index in indices]
+    chunksizes = (1, 1, *dataset.image_shape())
     with WindForecastNetCDFWriter(
         regression_file,
         initial_times,
@@ -93,19 +106,43 @@ def _fill_regression_outputs(
         dataset.latitude(),
         dataset.longitude(),
         source="wind-regression",
+        chunksizes=chunksizes,
     ) as writer:
+        started_at = time.perf_counter()
         for start in range(0, len(indices), batch_size):
             end = min(start + batch_size, len(indices))
+            batch_started = time.perf_counter()
             flat = _regression_batch(model, dataset, indices[start:end], device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            inference_elapsed = time.perf_counter() - batch_started
+
+            postprocess_started = time.perf_counter()
             fields = dataset.forecast_fields(flat.cpu().numpy())
             physical = dataset.denormalize_output(fields)
+            postprocess_elapsed = time.perf_counter() - postprocess_started
+
+            write_started = time.perf_counter()
             for local_index in range(end - start):
                 writer.write_initial(
                     start + local_index,
                     physical[local_index, :, 0],
                     physical[local_index, :, 1],
                 )
-            print(f"regression: {end}/{len(indices)}")
+            write_elapsed = time.perf_counter() - write_started
+            elapsed = time.perf_counter() - started_at
+            rate = end / max(elapsed, 1e-9)
+            remaining = (len(indices) - end) / rate if rate > 0.0 else 0.0
+            print(
+                f"regression: {end}/{len(indices)} "
+                f"infer={_format_duration(inference_elapsed)} "
+                f"post={_format_duration(postprocess_elapsed)} "
+                f"write={_format_duration(write_elapsed)} "
+                f"rate={rate:.2f} initial-times/s "
+                f"elapsed={_format_duration(elapsed)} "
+                f"eta={_format_duration(remaining)}",
+                flush=True,
+            )
 
 
 def _fill_diffusion_outputs(
@@ -130,6 +167,7 @@ def _fill_diffusion_outputs(
         stochastic_sampler, num_steps=sampler_steps
     )
     rng = np.random.default_rng(int(cfg.seed))
+    chunksizes = (1, 1, ensembles, *dataset.image_shape())
     with WindForecastNetCDFWriter(
         diffusion_file,
         initial_times,
@@ -138,11 +176,15 @@ def _fill_diffusion_outputs(
         dataset.longitude(),
         source="wind-residual-diffusion",
         ensemble_size=ensembles,
+        chunksizes=chunksizes,
     ) as writer:
+        started_at = time.perf_counter()
         for count, index in enumerate(indices, start=1):
+            sample_started = time.perf_counter()
             flat_mean = _regression_batch(regression_model, dataset, [index], device)
             mean_fields = dataset.forecast_fields(flat_mean.cpu().numpy())[0]
             base_condition = dataset.condition(index)
+            write_elapsed = 0.0
             for lead_position, lead in enumerate(leads):
                 mean_lead = torch.from_numpy(mean_fields[lead - 1]).unsqueeze(0).to(device)
                 condition = np.concatenate(
@@ -173,8 +215,24 @@ def _fill_diffusion_outputs(
                         f"Wind denormalization produced a non-finite field for "
                         f"initial time {initial_times[count - 1]} and lead {lead}"
                     )
-                writer.write_lead(count - 1, lead_position, physical[:, 0], physical[:, 1])
-            print(f"diffusion: {count}/{len(indices)}")
+                write_started = time.perf_counter()
+                writer.write_lead(
+                    count - 1, lead_position, physical[:, 0], physical[:, 1]
+                )
+                write_elapsed += time.perf_counter() - write_started
+            elapsed = time.perf_counter() - started_at
+            sample_elapsed = time.perf_counter() - sample_started
+            rate = count / max(elapsed, 1e-9)
+            remaining = (len(indices) - count) / rate if rate > 0.0 else 0.0
+            print(
+                f"diffusion: {count}/{len(indices)} "
+                f"sample={_format_duration(sample_elapsed)} "
+                f"write={_format_duration(write_elapsed)} "
+                f"rate={rate:.3f} initial-times/s "
+                f"elapsed={_format_duration(elapsed)} "
+                f"eta={_format_duration(remaining)}",
+                flush=True,
+            )
 
 
 @hydra.main(version_base="1.2", config_path="../conf", config_name="config_inference_wind_pipeline")

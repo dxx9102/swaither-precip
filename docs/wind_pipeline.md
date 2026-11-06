@@ -116,6 +116,13 @@ file.
 
 Both NetCDF outputs are written one initial time or one diffusion lead at a
 time.  This streaming writer avoids allocating a full test-year array in memory.
+Inference explicitly chunks deterministic variables as `(1, 1, lat, lon)` and
+ensemble variables as `(1, 1, ensemble, lat, lon)`, so each streamed write maps
+to complete HDF5 chunks instead of repeatedly decompressing large spatial tiles.
+Regression progress reports separate load/forward, host post-processing, and
+NetCDF write time together with throughput and ETA.  Outside inference, the
+writer retains its previous automatic chunking behavior unless `chunksizes` is
+provided explicitly.
 `inference.sampler_num_steps` must be at least 2 because PhysicsNeMo's stochastic
 sampler requires a non-degenerate sigma-step grid.
 

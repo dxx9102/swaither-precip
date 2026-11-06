@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 import xarray as xr
 from physicsnemo import Module
@@ -271,20 +273,35 @@ def test_wind_netcdf_streaming_writer_accepts_lead_slices(tmp_path):
     leads = [1, 2]
     deterministic = tmp_path / "stream_regression.nc"
     with WindForecastNetCDFWriter(
-        deterministic, times, leads, lat, lon, source="regression"
+        deterministic,
+        times,
+        leads,
+        lat,
+        lon,
+        source="regression",
+        chunksizes=(1, 1, 3, 4),
     ) as writer:
         writer.write_initial(0, np.zeros((2, 3, 4)), np.ones((2, 3, 4)))
         writer.write_lead(1, 0, np.full((3, 4), 2.0), np.full((3, 4), 3.0))
         writer.write_lead(1, 1, np.full((3, 4), 4.0), np.full((3, 4), 5.0))
     with xr.open_dataset(deterministic, engine="netcdf4") as ds:
         assert ds.u10.dims == ("initial_time", "lead_hour", "lat", "lon")
+        assert ds.u10.encoding["chunksizes"] == (1, 1, 3, 4)
+        assert ds.v10.encoding["chunksizes"] == (1, 1, 3, 4)
         np.testing.assert_allclose(
             ds.u10[1, 0].values, [[2.0] * 4, [2.0] * 4, [2.0] * 4]
         )
 
     ensemble = tmp_path / "stream_diffusion.nc"
     with WindForecastNetCDFWriter(
-        ensemble, times, leads, lat, lon, source="diffusion", ensemble_size=3
+        ensemble,
+        times,
+        leads,
+        lat,
+        lon,
+        source="diffusion",
+        ensemble_size=3,
+        chunksizes=(1, 1, 3, 3, 4),
     ) as writer:
         writer.write_initial(
             0, np.zeros((2, 3, 3, 4)), np.ones((2, 3, 3, 4))
@@ -299,4 +316,27 @@ def test_wind_netcdf_streaming_writer_accepts_lead_slices(tmp_path):
             "lat",
             "lon",
         )
+        assert ds.u10.encoding["chunksizes"] == (1, 1, 3, 3, 4)
+        assert ds.v10.encoding["chunksizes"] == (1, 1, 3, 3, 4)
         np.testing.assert_allclose(ds.v10[1, 1].values, np.full((3, 3, 4), 5.0))
+
+
+@pytest.mark.parametrize(
+    "chunksizes",
+    [
+        (1, 1, 3),
+        (1, 1, 4, 4),
+        (1, 0, 3, 4),
+    ],
+)
+def test_wind_netcdf_writer_rejects_invalid_chunksizes(chunksizes):
+    with pytest.raises(ValueError, match="chunksizes"):
+        WindForecastNetCDFWriter(
+            Path("unused.nc"),
+            [pd.Timestamp("2024-01-01")],
+            [1, 2],
+            np.zeros(3),
+            np.zeros(4),
+            source="regression",
+            chunksizes=chunksizes,
+        )

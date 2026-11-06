@@ -233,6 +233,7 @@ class WindForecastNetCDFWriter:
         lon: np.ndarray,
         source: str,
         ensemble_size: Optional[int] = None,
+        chunksizes: Optional[Sequence[int]] = None,
     ) -> None:
         self.path = Path(path)
         self.initial_times = [pd.Timestamp(value) for value in initial_times]
@@ -245,6 +246,31 @@ class WindForecastNetCDFWriter:
         )
         if self.ensemble_size is not None and self.ensemble_size < 1:
             raise ValueError("ensemble_size must be positive when provided")
+        self.chunksizes = (
+            None if chunksizes is None else tuple(int(value) for value in chunksizes)
+        )
+        if self.chunksizes is not None:
+            limits = (
+                len(self.initial_times),
+                len(self.lead_hours),
+                *((self.ensemble_size,) if self.ensemble_size is not None else ()),
+                len(self.lat),
+                len(self.lon),
+            )
+            if len(self.chunksizes) != len(limits):
+                raise ValueError(
+                    f"chunksizes must have {len(limits)} entries for dimensions "
+                    f"{self.dimensions}, got {self.chunksizes}"
+                )
+            invalid = any(
+                size < 1 or size > limit
+                for size, limit in zip(self.chunksizes, limits)
+            )
+            if invalid:
+                raise ValueError(
+                    f"chunksizes must be positive and no larger than {limits}, "
+                    f"got {self.chunksizes}"
+                )
         self._handle: Any = None
         self._u: Any = None
         self._v: Any = None
@@ -299,21 +325,18 @@ class WindForecastNetCDFWriter:
             lon_var = handle.createVariable("lon", "f4", ("lon",))
             lon_var[:] = self.lon
             lon_var.units = "degrees_east"
+            variable_kwargs = {
+                "zlib": True,
+                "complevel": 2,
+                "shuffle": True,
+            }
+            if self.chunksizes is not None:
+                variable_kwargs["chunksizes"] = self.chunksizes
             self._u = handle.createVariable(
-                "u10",
-                "f4",
-                self.dimensions,
-                zlib=True,
-                complevel=2,
-                shuffle=True,
+                "u10", "f4", self.dimensions, **variable_kwargs
             )
             self._v = handle.createVariable(
-                "v10",
-                "f4",
-                self.dimensions,
-                zlib=True,
-                complevel=2,
-                shuffle=True,
+                "v10", "f4", self.dimensions, **variable_kwargs
             )
             for name, variable in (("u10", self._u), ("v10", self._v)):
                 variable.units = "m s-1"
