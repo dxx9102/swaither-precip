@@ -136,6 +136,57 @@ def select_initial_indices(
     return np.asarray(indices, dtype=np.int64)
 
 
+def select_monthly_initial_indices(
+    times: Sequence[pd.Timestamp],
+    *,
+    initial_hour: Optional[int] = None,
+    start: Any = None,
+    end: Any = None,
+    samples_per_month: int = 0,
+    seed: int = 42,
+) -> np.ndarray:
+    """Select deterministic random initial times evenly across calendar months.
+
+    The hour and date filters are applied first.  A positive
+    ``samples_per_month`` then selects that many unique positions from every
+    represented year-month and returns them chronologically.  The value zero
+    preserves the unfiltered-by-month behavior of :func:`select_initial_indices`.
+    """
+    selected = select_initial_indices(
+        times,
+        initial_hour=initial_hour,
+        start=start,
+        end=end,
+    )
+    count = int(samples_per_month)
+    if count < 0:
+        raise ValueError("samples_per_month must be non-negative")
+    if count == 0 or len(selected) == 0:
+        return selected
+
+    parsed_times = pd.DatetimeIndex([pd.Timestamp(value) for value in times])
+    if parsed_times.tz is not None:
+        parsed_times = parsed_times.tz_convert(None)
+    selected_times = parsed_times[selected]
+    grouped: Dict[Tuple[int, int], list[int]] = {}
+    for index, timestamp in zip(selected, selected_times, strict=True):
+        grouped.setdefault((timestamp.year, timestamp.month), []).append(int(index))
+
+    rng = np.random.default_rng(int(seed))
+    sampled = []
+    for (year, month), positions in sorted(grouped.items()):
+        if len(positions) < count:
+            raise ValueError(
+                f"Month {year:04d}-{month:02d} has only {len(positions)} available "
+                f"initial times, but samples_per_month={count}"
+            )
+        sampled.extend(
+            int(position)
+            for position in rng.choice(positions, size=count, replace=False)
+        )
+    return np.sort(np.asarray(sampled, dtype=np.int64))
+
+
 class EpochRandomSubsetSampler:
     """Deterministic random full epochs or fixed-size random subsets.
 
@@ -546,6 +597,7 @@ __all__ = [
     "configure_storage",
     "uniform_random_sample_indices",
     "select_initial_indices",
+    "select_monthly_initial_indices",
     "EpochRandomSubsetSampler",
     "resume_epoch_and_step",
     "WindForecastNetCDFWriter",

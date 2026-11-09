@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 
 import numpy as np
@@ -20,6 +21,7 @@ from swaither.wind_helpers import (
     EpochRandomSubsetSampler,
     resume_epoch_and_step,
     select_initial_indices,
+    select_monthly_initial_indices,
     uniform_random_sample_indices,
 )
 
@@ -148,6 +150,47 @@ def test_select_initial_indices_uses_inclusive_2024_test_window():
     with pytest.raises(ValueError, match="no later"):
         select_initial_indices(
             times, start="2024-10-28T00:00:00", end="2024-01-02T00:00:00"
+        )
+
+
+def test_select_monthly_initial_indices_is_balanced_random_and_reproducible():
+    times = pd.date_range("2024-01-01", "2024-03-31 23:00", freq="h")
+    filters = dict(
+        initial_hour=0,
+        start="2024-01-02T00:00:00",
+        end="2024-03-29T00:00:00",
+    )
+    first = select_monthly_initial_indices(
+        times, samples_per_month=3, seed=42, **filters
+    )
+    repeated = select_monthly_initial_indices(
+        times, samples_per_month=3, seed=42, **filters
+    )
+    alternative = select_monthly_initial_indices(
+        times, samples_per_month=3, seed=43, **filters
+    )
+
+    selected_times = times[first]
+    assert len(first) == 9
+    assert len(np.unique(first)) == len(first)
+    assert np.all(selected_times.hour == 0)
+    assert selected_times.is_monotonic_increasing
+    assert Counter(selected_times.month) == {1: 3, 2: 3, 3: 3}
+    np.testing.assert_array_equal(first, repeated)
+    assert not np.array_equal(first, alternative)
+    np.testing.assert_array_equal(
+        select_monthly_initial_indices(times, samples_per_month=0, **filters),
+        select_initial_indices(times, **filters),
+    )
+
+
+def test_select_monthly_initial_indices_rejects_invalid_or_insufficient_counts():
+    times = pd.date_range("2024-01-01", "2024-02-29 23:00", freq="h")
+    with pytest.raises(ValueError, match="non-negative"):
+        select_monthly_initial_indices(times, samples_per_month=-1)
+    with pytest.raises(ValueError, match="Month 2024-02 has only 29"):
+        select_monthly_initial_indices(
+            times, initial_hour=0, samples_per_month=30
         )
 
 

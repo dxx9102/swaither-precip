@@ -245,6 +245,7 @@ def _evaluate_deterministic(
     persistence: bool,
     low_condition: Path | None,
     checkpoint: str | None,
+    initial_times_filter: Sequence[pd.Timestamp] | None = None,
 ) -> _EvaluationResult:
     with xr.open_dataset(forecast_path, engine="netcdf4") as forecast_ds:
         initial_times = _times(forecast_ds["initial_time"].values)
@@ -253,6 +254,18 @@ def _evaluate_deterministic(
         lon = np.asarray(forecast_ds["lon"].values)
         forecast_u = forecast_ds[forecast_u_name]
         forecast_v = forecast_ds[forecast_v_name]
+        if initial_times_filter is not None:
+            requested_times = _times(initial_times_filter)
+            missing = requested_times.difference(initial_times)
+            if len(missing):
+                raise ValueError(
+                    "Requested regression initial times are absent from the "
+                    f"forecast: {missing.tolist()}"
+                )
+            selected_positions = initial_times.get_indexer(requested_times)
+            initial_times = initial_times[selected_positions]
+            forecast_u = forecast_u.isel(initial_time=selected_positions)
+            forecast_v = forecast_v.isel(initial_time=selected_positions)
 
         forecast_acc = {
             f"lead_{lead}": _MetricAccumulator() for lead in lead_values
@@ -603,6 +616,8 @@ def _evaluate_ensemble(
 def _comparison_payload(
     regression: _EvaluationResult,
     diffusion: _EvaluationResult,
+    *,
+    full_regression_initial_time_count: int,
 ) -> Dict[str, Any]:
     if not regression.initial_times.equals(diffusion.initial_times):
         raise ValueError(
@@ -633,6 +648,10 @@ def _comparison_payload(
         "initial_time_start": regression.initial_times.min().isoformat(),
         "initial_time_end": regression.initial_times.max().isoformat(),
         "initial_time_count": len(regression.initial_times),
+        "initial_time_scope": "diffusion_initial_times",
+        "full_regression_initial_time_count": int(
+            full_regression_initial_time_count
+        ),
         "regression_leads": list(regression.leads),
         "diffusion_leads": list(diffusion.leads),
         "common_leads": common_leads,
@@ -751,9 +770,35 @@ def main() -> None:
     )
     if args.comparison_output:
         assert regression is not None and diffusion is not None
+        comparison_regression = regression
+        if not regression.initial_times.equals(diffusion.initial_times):
+            missing = diffusion.initial_times.difference(regression.initial_times)
+            if len(missing):
+                raise ValueError(
+                    "Diffusion initial times must be a subset of the regression "
+                    f"forecast; missing from regression: {missing.tolist()}"
+                )
+            comparison_regression = _evaluate_deterministic(
+                forecast_path=Path(args.forecast),
+                truth_path=truth_path,
+                truth_index=truth_index,
+                truth_u_name=args.truth_u,
+                truth_v_name=args.truth_v,
+                forecast_u_name=args.forecast_u,
+                forecast_v_name=args.forecast_v,
+                batch_size=args.batch_size,
+                persistence=False,
+                low_condition=None,
+                checkpoint=args.regression_checkpoint,
+                initial_times_filter=diffusion.initial_times,
+            )
         _write_json(
             Path(args.comparison_output),
-            _comparison_payload(regression, diffusion),
+            _comparison_payload(
+                comparison_regression,
+                diffusion,
+                full_regression_initial_time_count=len(regression.initial_times),
+            ),
             "comparison metrics",
         )
 

@@ -264,6 +264,84 @@ def test_staged_metrics_include_diffusion_mean_and_comparison(tmp_path, monkeypa
     )
 
 
+def test_comparison_restricts_regression_to_diffusion_initial_times(
+    tmp_path, monkeypatch
+):
+    lat = np.linspace(1.0, 2.0, 3)
+    lon = np.linspace(3.0, 4.0, 4)
+    truth, _ = _truth_file(tmp_path, lat, lon)
+    leads = [1, 2]
+    regression_initial = [
+        pd.Timestamp("2024-01-01 00:00"),
+        pd.Timestamp("2024-01-02 00:00"),
+    ]
+    diffusion_initial = [pd.Timestamp("2024-01-02 00:00")]
+
+    forecast = tmp_path / "forecast.nc"
+    write_forecast_netcdf(
+        forecast,
+        np.asarray([10.0, 0.0]).reshape(2, 1, 1, 1)
+        * np.ones((2, len(leads), len(lat), len(lon))),
+        np.asarray([10.0, 1.0]).reshape(2, 1, 1, 1)
+        * np.ones((2, len(leads), len(lat), len(lon))),
+        regression_initial,
+        leads,
+        lat,
+        lon,
+    )
+    ensemble = tmp_path / "ensemble.nc"
+    write_ensemble_netcdf(
+        ensemble,
+        np.asarray([1.0, 3.0]).reshape(1, 1, 2, 1, 1)
+        * np.ones((1, len(leads), 2, len(lat), len(lon))),
+        np.asarray([2.0, 4.0]).reshape(1, 1, 2, 1, 1)
+        * np.ones((1, len(leads), 2, len(lat), len(lon))),
+        diffusion_initial,
+        leads,
+        lat,
+        lon,
+    )
+
+    regression_json = tmp_path / "regression.json"
+    diffusion_json = tmp_path / "diffusion.json"
+    comparison_json = tmp_path / "comparison.json"
+    _run_main(
+        monkeypatch,
+        [
+            "--forecast",
+            str(forecast),
+            "--ensemble",
+            str(ensemble),
+            "--truth",
+            str(truth),
+            "--truth-u",
+            "u_10m",
+            "--truth-v",
+            "v_10m",
+            "--regression-output",
+            str(regression_json),
+            "--diffusion-output",
+            str(diffusion_json),
+            "--comparison-output",
+            str(comparison_json),
+        ],
+    )
+
+    regression = json.loads(regression_json.read_text(encoding="utf-8"))
+    diffusion = json.loads(diffusion_json.read_text(encoding="utf-8"))
+    comparison = json.loads(comparison_json.read_text(encoding="utf-8"))
+    assert regression["metadata"]["initial_time_count"] == 2
+    assert regression["overall"]["vector_rmse"] > 0.0
+    assert diffusion["metadata"]["initial_time_count"] == 1
+    assert comparison["metadata"]["initial_time_count"] == 1
+    assert comparison["metadata"]["initial_time_scope"] == "diffusion_initial_times"
+    assert comparison["metadata"]["full_regression_initial_time_count"] == 2
+    assert comparison["regression"]["overall"]["vector_rmse"] == pytest.approx(0.0)
+    assert comparison["diffusion_minus_regression"]["overall"][
+        "vector_rmse"
+    ] == pytest.approx(np.sqrt(8.0))
+
+
 def test_ensemble_can_be_evaluated_without_a_regression_forecast(tmp_path, monkeypatch):
     lat = np.linspace(1.0, 2.0, 3)
     lon = np.linspace(3.0, 4.0, 4)

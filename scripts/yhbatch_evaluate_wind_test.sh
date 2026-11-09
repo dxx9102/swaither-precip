@@ -3,6 +3,11 @@
 #   yhbatch --export=ALL,EVAL_STAGE=all -p a800x_595 -G 1 \
 #     -o ./outputs/slurm/wind_evaluate_test.out \
 #     scripts/yhbatch_evaluate_wind_test.sh
+# For a diffusion-only monthly 00 UTC sample:
+#   yhbatch --export=ALL,EVAL_STAGE=diffusion -p a800x_595 -G 1 \
+#     -o ./outputs/slurm/wind_evaluate_test.out \
+#     scripts/yhbatch_evaluate_wind_test.sh \
+#     inference.diffusion_samples_per_month=3 inference.diffusion_sample_seed=42
 set -euo pipefail
 
 repo_root="/XYFS02/HDD_POOL/cmafj_klli/cmafj_klli_1/dx/swaither-precip"

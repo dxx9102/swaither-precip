@@ -29,7 +29,11 @@ configure_storage()
 
 from swaither.datasets.wind import WindForecastDataset
 from swaither.models import WindEDMPrecondSuperResolution  # noqa: F401 - checkpoint class registry
-from swaither.wind_helpers import WindForecastNetCDFWriter, select_initial_indices
+from swaither.wind_helpers import (
+    WindForecastNetCDFWriter,
+    select_initial_indices,
+    select_monthly_initial_indices,
+)
 
 
 def _dataset(cfg: DictConfig) -> WindForecastDataset:
@@ -45,6 +49,21 @@ def _selected_indices(dataset: WindForecastDataset, cfg: DictConfig) -> List[int
         start=cfg.get("initial_time_start"),
         end=cfg.get("initial_time_end"),
         max_initial_times=int(cfg.get("max_initial_times", 0)),
+    )
+    return selected.tolist()
+
+
+def _diffusion_indices(dataset: WindForecastDataset, cfg: DictConfig) -> List[int]:
+    samples_per_month = int(cfg.get("diffusion_samples_per_month", 0))
+    if samples_per_month == 0:
+        return _selected_indices(dataset, cfg)
+    selected = select_monthly_initial_indices(
+        dataset.time(),
+        initial_hour=cfg.get("initial_hour"),
+        start=cfg.get("initial_time_start"),
+        end=cfg.get("initial_time_end"),
+        samples_per_month=samples_per_month,
+        seed=int(cfg.get("diffusion_sample_seed", 42)),
     )
     return selected.tolist()
 
@@ -241,13 +260,22 @@ def main(cfg: DictConfig) -> None:
     if not torch.cuda.is_available():
         print("[WARN] CUDA is unavailable; wind inference will run on CPU")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = _dataset(cfg.dataset)
-    indices = _selected_indices(dataset, cfg.inference)
-    if not indices:
-        raise RuntimeError("No initial times selected for wind inference")
     mode = str(cfg.inference.mode)
     if mode not in ("regression", "diffusion", "all"):
         raise ValueError("inference.mode must be regression, diffusion, or all")
+    if int(cfg.inference.get("diffusion_samples_per_month", 0)) < 0:
+        raise ValueError("inference.diffusion_samples_per_month must be non-negative")
+    dataset = _dataset(cfg.dataset)
+    regression_indices = _selected_indices(dataset, cfg.inference)
+    if not regression_indices:
+        raise RuntimeError("No initial times selected for wind inference")
+    diffusion_indices = (
+        _diffusion_indices(dataset, cfg.inference)
+        if mode in ("diffusion", "all")
+        else regression_indices
+    )
+    if not diffusion_indices:
+        raise RuntimeError("No initial times selected for diffusion inference")
 
     regression_model = None
     if mode in ("regression", "all", "diffusion"):
@@ -258,7 +286,7 @@ def main(cfg: DictConfig) -> None:
             Path(cfg.outputs.regression_file),
             dataset,
             regression_model,
-            indices,
+            regression_indices,
             device,
             int(cfg.inference.regression_batch_size),
         )
@@ -271,7 +299,7 @@ def main(cfg: DictConfig) -> None:
             dataset,
             regression_model,
             diffusion_model,
-            indices,
+            diffusion_indices,
             leads,
             device,
             cfg.inference,
