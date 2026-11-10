@@ -8,7 +8,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Mapping, Tuple
 
 import hydra
 import numpy as np
@@ -29,6 +29,11 @@ from swaither.wind_helpers import configure_storage
 configure_storage()
 
 from swaither.datasets.wind import WindForecastDataset
+from swaither.losses.wind_regression import (
+    RegressionLossResult,
+    WindRegressionLoss,
+    build_wind_regression_loss,
+)
 from swaither.models import WindForecastUNet
 from swaither.wind_helpers import uniform_random_sample_indices, wind_metrics
 
@@ -76,16 +81,76 @@ def _augment_labels(
     return labels if int(getattr(model, "augment_dim", 0)) > 0 else None
 
 
+def _loss_function(
+    cfg: DictConfig, dataset: WindForecastDataset, device: torch.device
+) -> WindRegressionLoss:
+    loss_cfg = cfg.training.get("loss")
+    if loss_cfg is None:
+        loss_cfg = {
+            "terms": {
+                "normalized_mse": {
+                    "type": "normalized_mse",
+                    "weight": 1.0,
+                }
+            }
+        }
+    else:
+        loss_cfg = OmegaConf.to_container(loss_cfg, resolve=True)
+    return build_wind_regression_loss(
+        loss_cfg,
+        output_min=dataset.output_min,
+        output_max=dataset.output_max,
+        forecast_hours=dataset.forecast_horizon_hours,
+        wind_components=len(dataset.output_channels()),
+    ).to(device)
+
+
+def _accumulate_loss_components(
+    sums: Dict[str, Dict[str, float]],
+    result: RegressionLossResult,
+    weight: int,
+) -> None:
+    for group_name, values in (("raw", result.raw), ("weighted", result.weighted)):
+        destination = sums.setdefault(group_name, {})
+        for name, value in values.items():
+            destination[name] = (
+                destination.get(name, 0.0) + float(value.detach().cpu()) * weight
+            )
+
+
+def _mean_loss_components(
+    sums: Mapping[str, Mapping[str, float]], value_count: int
+) -> Dict[str, Dict[str, float]]:
+    divisor = max(int(value_count), 1)
+    return {
+        group_name: {name: total / divisor for name, total in values.items()}
+        for group_name, values in sums.items()
+    }
+
+
+def _format_loss_terms(components: Mapping[str, float]) -> str:
+    return ", ".join(f"{name}={value:.6f}" for name, value in components.items())
+
+
 def _validation(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     dataset: WindForecastDataset,
+    loss_fn: WindRegressionLoss,
     amp: bool,
-) -> Tuple[float, Dict[str, float], Dict[str, Dict[str, float]]]:
+) -> Tuple[
+    float,
+    float,
+    Dict[str, float],
+    Dict[str, Dict[str, float]],
+    Dict[str, Dict[str, float]],
+]:
     model.eval()
+    composite_loss = 0.0
     squared_error = 0.0
     value_count = 0
+    loss_sums: Dict[str, Dict[str, float]] = {}
     metric_sums: Dict[str, Tuple[float, int]] = {}
     per_lead_sums: Dict[str, Dict[str, Tuple[float, int]]] = {
         str(lead): {} for lead in range(1, dataset.forecast_horizon_hours + 1)
@@ -98,7 +163,10 @@ def _validation(
     ) -> None:
         for name, value in metrics.items():
             previous_sum, previous_weight = destination.get(name, (0.0, 0))
-            destination[name] = (previous_sum + value * weight, previous_weight + weight)
+            destination[name] = (
+                previous_sum + value * weight,
+                previous_weight + weight,
+            )
 
     with torch.no_grad():
         for y, x, time_labels in loader:
@@ -115,9 +183,13 @@ def _validation(
                     x,
                     augment_labels=_augment_labels(model, time_labels),
                 )
-            squared_error += float(
-                torch.mean((prediction.float() - y.float()) ** 2).cpu()
-            ) * y.numel()
+            loss_result = loss_fn(prediction, y)
+            composite_loss += float(loss_result.total.detach().cpu()) * y.numel()
+            _accumulate_loss_components(loss_sums, loss_result, y.numel())
+            squared_error += (
+                float(torch.mean((prediction.float() - y.float()) ** 2).cpu())
+                * y.numel()
+            )
             value_count += y.numel()
 
             pred_fields = dataset.forecast_fields(prediction.float().cpu().numpy())
@@ -140,11 +212,7 @@ def _validation(
                 )
                 lead_metrics["normalized_mse"] = float(
                     np.mean(
-                        (
-                            pred_fields[:, lead_index]
-                            - true_fields[:, lead_index]
-                        )
-                        ** 2
+                        (pred_fields[:, lead_index] - true_fields[:, lead_index]) ** 2
                     )
                 )
                 add_metrics(
@@ -163,7 +231,13 @@ def _validation(
         }
         for lead, lead_metrics in per_lead_sums.items()
     }
-    return squared_error / max(value_count, 1), overall_metrics, per_lead
+    return (
+        composite_loss / max(value_count, 1),
+        squared_error / max(value_count, 1),
+        overall_metrics,
+        per_lead,
+        _mean_loss_components(loss_sums, value_count),
+    )
 
 
 def _probe_cuda_memory(
@@ -171,6 +245,7 @@ def _probe_cuda_memory(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    loss_fn: WindRegressionLoss,
     amp: bool,
 ) -> None:
     if device.type != "cuda":
@@ -188,7 +263,7 @@ def _probe_cuda_memory(
             x,
             augment_labels=_augment_labels(model, time_labels),
         )
-        loss = torch.mean((prediction.float() - y.float()) ** 2)
+        loss = loss_fn(prediction, y).total
     loss.backward()
     torch.cuda.synchronize(device)
     print(
@@ -201,7 +276,11 @@ def _probe_cuda_memory(
     optimizer.zero_grad(set_to_none=True)
 
 
-@hydra.main(version_base="1.2", config_path="../conf", config_name="config_training_wind_regression")
+@hydra.main(
+    version_base="1.2",
+    config_path="../conf",
+    config_name="config_training_wind_regression",
+)
 def main(cfg: DictConfig) -> None:
     configure_storage()
     _seed_everything(int(cfg.training.seed))
@@ -259,6 +338,13 @@ def main(cfg: DictConfig) -> None:
 
     amp = bool(cfg.training.amp) and device.type == "cuda"
     model = _model(cfg.model, train_dataset, use_fp16=False, amp=amp).to(device)
+    loss_fn = _loss_function(cfg, train_dataset, device)
+    checkpoint_metric = str(cfg.training.get("checkpoint_metric", "vector_rmse"))
+    if checkpoint_metric not in {"vector_rmse", "validation_loss"}:
+        raise ValueError(
+            "training.checkpoint_metric must be vector_rmse or validation_loss, "
+            f"got {checkpoint_metric!r}"
+        )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg.training.lr),
@@ -271,7 +357,7 @@ def main(cfg: DictConfig) -> None:
         patience=int(cfg.training.lr_patience),
     )
     if bool(cfg.training.get("memory_probe", True)):
-        _probe_cuda_memory(model, train_loader, optimizer, device, amp)
+        _probe_cuda_memory(model, train_loader, optimizer, device, loss_fn, amp)
 
     run_dir = Path(cfg.training.run_dir)
     checkpoint_dir = Path(cfg.training.checkpoint_dir)
@@ -281,7 +367,7 @@ def main(cfg: DictConfig) -> None:
     writer = SummaryWriter(log_dir=str(Path(cfg.training.tensorboard_dir)))
 
     start_epoch = 0
-    best_val = float("inf")
+    best_score = float("inf")
     epochs_without_improvement = 0
     resume = Path(str(cfg.training.resume)) if cfg.training.get("resume") else None
     if resume is not None and resume.exists():
@@ -289,15 +375,28 @@ def main(cfg: DictConfig) -> None:
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         start_epoch = int(state["epoch"]) + 1
-        best_val = float(state.get("best_val", best_val))
-        print(f"Resumed from {resume} at epoch {start_epoch}")
+        saved_metric = state.get("checkpoint_metric")
+        if saved_metric == checkpoint_metric:
+            best_score = float(
+                state.get("best_score", state.get("best_val", best_score))
+            )
+        else:
+            print(
+                "Resetting best-checkpoint score because the resumed checkpoint "
+                f"used {saved_metric!r}, not {checkpoint_metric!r}"
+            )
+        print(
+            f"Resumed from {resume} at epoch {start_epoch}; "
+            f"checkpoint_metric={checkpoint_metric}, best_score={best_score:.6f}"
+        )
 
     accumulation = max(int(cfg.training.get("gradient_accumulation_steps", 1)), 1)
     metrics_path = run_dir / "validation_metrics.json"
     for epoch in range(start_epoch, int(cfg.training.epochs)):
         model.train()
         started = time.time()
-        running_squared_error = 0.0
+        running_loss = 0.0
+        train_loss_sums: Dict[str, Dict[str, float]] = {}
         trained_values = 0
         optimizer.zero_grad(set_to_none=True)
         for step, (y, x, time_labels) in enumerate(train_loader, start=1):
@@ -314,7 +413,8 @@ def main(cfg: DictConfig) -> None:
                     x,
                     augment_labels=_augment_labels(model, time_labels),
                 )
-                loss = torch.mean((prediction.float() - y.float()) ** 2)
+                loss_result = loss_fn(prediction, y)
+                loss = loss_result.total
             (loss / accumulation).backward()
             if step % accumulation == 0 or step == len(train_loader):
                 if cfg.training.get("grad_clip") is not None:
@@ -323,16 +423,41 @@ def main(cfg: DictConfig) -> None:
                     )
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-            running_squared_error += float(loss.detach().cpu()) * y.numel()
+            running_loss += float(loss.detach().cpu()) * y.numel()
+            _accumulate_loss_components(train_loss_sums, loss_result, y.numel())
             trained_values += y.numel()
 
-        train_loss = running_squared_error / max(trained_values, 1)
-        val_loss, metrics, per_lead_metrics = _validation(
-            model, val_loader, device, validation_dataset, amp
+        train_loss = running_loss / max(trained_values, 1)
+        train_loss_components = _mean_loss_components(train_loss_sums, trained_values)
+        (
+            val_loss,
+            val_mse,
+            metrics,
+            per_lead_metrics,
+            val_loss_components,
+        ) = _validation(model, val_loader, device, validation_dataset, loss_fn, amp)
+        checkpoint_score = (
+            float(metrics["vector_rmse"])
+            if checkpoint_metric == "vector_rmse"
+            else float(val_loss)
         )
-        scheduler.step(val_loss)
-        writer.add_scalar("train/mse", train_loss, epoch)
-        writer.add_scalar("validation/mse", val_loss, epoch)
+        if not np.isfinite(checkpoint_score):
+            raise RuntimeError(
+                f"Non-finite validation checkpoint score: {checkpoint_score}"
+            )
+        scheduler.step(checkpoint_score)
+        writer.add_scalar("train/loss", train_loss, epoch)
+        writer.add_scalar("validation/loss", val_loss, epoch)
+        writer.add_scalar("validation/mse", val_mse, epoch)
+        writer.add_scalar(
+            f"validation/checkpoint_{checkpoint_metric}", checkpoint_score, epoch
+        )
+        for group_name, components in train_loss_components.items():
+            for name, value in components.items():
+                writer.add_scalar(f"train/loss_{group_name}/{name}", value, epoch)
+        for group_name, components in val_loss_components.items():
+            for name, value in components.items():
+                writer.add_scalar(f"validation/loss_{group_name}/{name}", value, epoch)
         for name, value in metrics.items():
             writer.add_scalar(f"validation/{name}", value, epoch)
         for lead_hour, lead_metrics in per_lead_metrics.items():
@@ -341,20 +466,40 @@ def main(cfg: DictConfig) -> None:
                     f"validation/lead_{int(lead_hour):02d}/{name}", value, epoch
                 )
         print(
-            f"epoch={epoch + 1}/{cfg.training.epochs} train_mse={train_loss:.6f} "
-            f"val_mse={val_loss:.6f} vector_rmse={metrics['vector_rmse']:.4f} "
+            f"epoch={epoch + 1}/{cfg.training.epochs} train_loss={train_loss:.6f} "
+            f"val_loss={val_loss:.6f} val_mse={val_mse:.6f} "
+            f"vector_rmse={metrics['vector_rmse']:.4f} "
+            f"checkpoint_{checkpoint_metric}={checkpoint_score:.6f} "
             f"elapsed={time.time() - started:.1f}s"
         )
+        print(
+            "[loss raw] train "
+            f"{{{_format_loss_terms(train_loss_components.get('raw', {}))}}}; "
+            "validation "
+            f"{{{_format_loss_terms(val_loss_components.get('raw', {}))}}}",
+            flush=True,
+        )
+        print(
+            "[loss weighted] train "
+            f"{{{_format_loss_terms(train_loss_components.get('weighted', {}))}}}; "
+            "validation "
+            f"{{{_format_loss_terms(val_loss_components.get('weighted', {}))}}}",
+            flush=True,
+        )
 
-        if val_loss < best_val:
-            best_val = val_loss
+        if checkpoint_score < best_score:
+            best_score = checkpoint_score
             epochs_without_improvement = 0
             model.save(str(checkpoint_dir / "WindForecastUNet.best.mdlus"))
             with metrics_path.open("w", encoding="utf-8") as handle:
                 json.dump(
                     {
                         "epoch": epoch + 1,
-                        "val_mse": val_loss,
+                        "val_loss": val_loss,
+                        "val_mse": val_mse,
+                        "checkpoint_metric": checkpoint_metric,
+                        "checkpoint_score": checkpoint_score,
+                        "loss_terms": val_loss_components,
                         **metrics,
                         "per_lead": per_lead_metrics,
                     },
@@ -368,17 +513,24 @@ def main(cfg: DictConfig) -> None:
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
-                "best_val": best_val,
+                "best_score": best_score,
+                "best_val": best_score,
+                "checkpoint_metric": checkpoint_metric,
                 "config": OmegaConf.to_container(cfg, resolve=True),
             },
             checkpoint_dir / "last.pt",
         )
         if epochs_without_improvement >= int(cfg.training.early_stopping_patience):
-            print(f"Early stopping after {epochs_without_improvement} non-improving epochs")
+            print(
+                f"Early stopping after {epochs_without_improvement} non-improving epochs"
+            )
             break
 
     writer.close()
-    print(f"Best validation MSE={best_val:.6f}; checkpoints are in {checkpoint_dir}")
+    print(
+        f"Best validation {checkpoint_metric}={best_score:.6f}; "
+        f"checkpoints are in {checkpoint_dir}"
+    )
 
 
 if __name__ == "__main__":

@@ -90,6 +90,26 @@ training:
   amp: true
   memory_probe: true
   max_samples: 0
+  checkpoint_metric: vector_rmse
+  loss:
+    terms:
+      normalized_mse:
+        type: normalized_mse
+        weight: 1.0
+      vector_mse:
+        type: physical_vector_mse
+        weight: 0.0
+      vector_charbonnier:
+        type: physical_vector_charbonnier
+        weight: 0.0
+        epsilon: 1.0
+      speed_mae:
+        type: physical_speed_mae
+        weight: 0.0
+      direction:
+        type: direction_cosine
+        weight: 0.0
+        min_speed: 2.0
   run_dir: ${paths.outputs}/wind_regression
   checkpoint_dir: ${paths.outputs}/wind_regression/checkpoints
   tensorboard_dir: ${paths.outputs}/tensorboard/wind_regression

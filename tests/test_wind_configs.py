@@ -84,6 +84,10 @@ def test_stats_and_diffusion_configs_cover_complete_lead_range():
 def test_regression_validation_covers_all_configured_initial_times():
     regression = OmegaConf.load(REPO / "conf" / "config_training_wind_regression.yaml")
     assert regression.validation.max_samples == 0
+    assert regression.training.checkpoint_metric == "vector_rmse"
+    assert regression.training.loss.terms.normalized_mse.type == "normalized_mse"
+    assert regression.training.loss.terms.normalized_mse.weight == 1.0
+    assert regression.training.loss.terms.vector_mse.weight == 0.0
 
 
 def test_old_wind_entrypoints_and_condition_files_are_removed():

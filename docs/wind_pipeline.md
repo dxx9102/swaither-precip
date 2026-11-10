@@ -85,6 +85,54 @@ python scripts/train_wind_regression.py \
   --config-name=config_training_wind_regression.yaml
 ```
 
+Regression training supports a weighted composite loss.  The configured terms
+are summed without automatic renormalization:
+
+```text
+L_total = sum_i weight_i * L_i
+```
+
+The default keeps the previous behavior by enabling only `normalized_mse`.
+Available terms are:
+
+- `normalized_mse`: the existing normalized-space MSE.
+- `physical_vector_mse`: `mean(du^2 + dv^2) / S`, where `du` and `dv` are
+  residuals converted back to m/s and `S` is the mean squared output range.
+- `physical_vector_charbonnier`: smooth vector-magnitude error with a
+  configurable `epsilon`, scaled by `sqrt(S)`.
+- `physical_speed_mae`: absolute wind-speed error scaled by `sqrt(S)`.
+- `direction_cosine`: `1 - cos(angle_delta)`, evaluated only where the truth
+  speed is at least `min_speed`.
+
+Terms with zero weight are not evaluated.  Enable a multi-term experiment with
+Hydra overrides while retaining the four default terms as disabled entries:
+
+```bash
+python scripts/train_wind_regression.py \
+  --config-name=config_training_wind_regression.yaml \
+  training.loss.terms.normalized_mse.weight=0.2 \
+  training.loss.terms.vector_mse.weight=1.0 \
+  training.loss.terms.vector_charbonnier.weight=0.1 \
+  training.loss.terms.speed_mae.weight=0.05 \
+  training.loss.terms.direction.weight=0.01
+```
+
+Every term accepts its own `type`, `weight`, and type-specific parameters.
+New named terms may also be added through Hydra, which is useful when comparing
+two direction losses with different calm-wind thresholds.  Regression
+checkpoint selection defaults to `training.checkpoint_metric=vector_rmse`; set
+it to `validation_loss` to select by the configured composite objective.
+
+The one-step multi-loss GPU smoke job can be submitted manually with:
+
+```bash
+RUN_STAMP=$(date +%Y%m%d_%H%M%S)
+yhbatch -p a800x_595 -G 1 \
+  --export=ALL,RUN_STAMP=${RUN_STAMP} \
+  -o ./outputs/slurm/wind_regression_loss_smoke_${RUN_STAMP}.out \
+  scripts/yhbatch_smoke_wind_regression_loss.sh
+```
+
 The default checkpoint is:
 
 ```text
