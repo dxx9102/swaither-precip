@@ -19,6 +19,7 @@ from swaither.datasets.wind import (
 )
 from swaither.wind_helpers import (
     EpochRandomSubsetSampler,
+    expand_initial_time_indices,
     resume_epoch_and_step,
     select_initial_indices,
     select_monthly_initial_indices,
@@ -75,7 +76,15 @@ def _write_high(path, times: pd.DatetimeIndex, lat, lon) -> None:
     ).to_netcdf(path, engine="netcdf4")
 
 
-def _dataset(tmp_path, horizon: int = 72, low_times=None, high_times=None):
+def _dataset(
+    tmp_path,
+    horizon: int = 72,
+    low_times=None,
+    high_times=None,
+    years=None,
+    initial_hours=None,
+    allow_cross_year=False,
+):
     low_lat = _grid(5, 2.0)
     low_lon = _grid(6, 2.0)
     high_lat = _grid(9, 1.5)
@@ -84,6 +93,7 @@ def _dataset(tmp_path, horizon: int = 72, low_times=None, high_times=None):
         low_times = pd.date_range("2020-01-01", periods=horizon + 7, freq="h")
     if high_times is None:
         high_times = low_times
+    selected_years = [2020] if years is None else list(years)
     low = tmp_path / "low.nc"
     high = tmp_path / "high.nc"
     static = tmp_path / "static_high.nc"
@@ -97,7 +107,9 @@ def _dataset(tmp_path, horizon: int = 72, low_times=None, high_times=None):
         high,
         static,
         forecast_horizon_hours=horizon,
-        years=[2020],
+        years=selected_years,
+        initial_hours=initial_hours,
+        allow_cross_year=allow_cross_year,
         normalize=False,
     )
     _stats(stats, probe.physical_input_names, probe.output_variables)
@@ -106,7 +118,9 @@ def _dataset(tmp_path, horizon: int = 72, low_times=None, high_times=None):
         high,
         static,
         forecast_horizon_hours=horizon,
-        years=[2020],
+        years=selected_years,
+        initial_hours=initial_hours,
+        allow_cross_year=allow_cross_year,
         stats_path=stats,
     )
     return data
@@ -212,6 +226,36 @@ def test_uniform_random_sample_indices_are_deterministic_and_unique():
     np.testing.assert_array_equal(
         uniform_random_sample_indices(10, 10, seed=42), np.arange(10)
     )
+
+
+def test_expand_initial_time_indices_covers_all_requested_leads():
+    initial = np.array([3, 17, 300], dtype=np.int64)
+    positions = np.array([0, 2, 4], dtype=np.int64)
+    expanded = expand_initial_time_indices(initial, positions, 5)
+
+    np.testing.assert_array_equal(
+        expanded,
+        np.array([15, 17, 19, 85, 87, 89, 1500, 1502, 1504]),
+    )
+    with pytest.raises(ValueError, match="positive"):
+        expand_initial_time_indices(initial, positions, 0)
+    with pytest.raises(ValueError, match="within"):
+        expand_initial_time_indices(initial, [5], 5)
+
+
+def test_diffusion_validation_sampling_covers_all_configured_leads():
+    initial = uniform_random_sample_indices(361, 32, seed=42)
+    expanded = expand_initial_time_indices(initial, range(5), 5)
+
+    assert len(initial) == 32
+    assert len(np.unique(initial)) == 32
+    assert len(expanded) == 160
+    for position, base_index in enumerate(initial):
+        group_start = position * 5
+        start = int(base_index) * 5
+        np.testing.assert_array_equal(
+            expanded[group_start : group_start + 5], np.arange(start, start + 5)
+        )
 
 
 def test_epoch_random_subset_sampler_is_reproducible_and_epoch_dependent():
@@ -325,8 +369,88 @@ def test_diffusion_view_expands_initial_times_by_lead(tmp_path):
 
 def test_dataset_never_crosses_year_boundary(tmp_path):
     low_times = pd.date_range("2019-12-31 00:00", periods=80, freq="h")
-    with pytest.raises(ValueError, match="No complete same-year"):
+    with pytest.raises(ValueError, match="No complete wind samples"):
         _dataset(tmp_path, horizon=72, low_times=low_times, high_times=low_times)
+
+
+def test_initial_hours_filter_exact_forecast_times(tmp_path):
+    low_times = pd.date_range("2020-01-01 00:00", periods=48, freq="h")
+    selected_hours = [0, 6, 12, 18]
+    data = _dataset(
+        tmp_path,
+        horizon=6,
+        low_times=low_times,
+        high_times=low_times,
+        initial_hours=selected_hours,
+    )
+
+    initial_times = data.time()
+    assert len(initial_times) == 6
+    assert {timestamp.hour for timestamp in initial_times} == set(selected_hours)
+    assert initial_times == [
+        pd.Timestamp("2020-01-01 06:00"),
+        pd.Timestamp("2020-01-01 12:00"),
+        pd.Timestamp("2020-01-01 18:00"),
+        pd.Timestamp("2020-01-02 00:00"),
+        pd.Timestamp("2020-01-02 06:00"),
+        pd.Timestamp("2020-01-02 12:00"),
+    ]
+
+
+@pytest.mark.parametrize("initial_hours", [[], [-1], [24], [0, 0]])
+def test_initial_hours_reject_invalid_values(tmp_path, initial_hours):
+    with pytest.raises(ValueError, match="initial_hours"):
+        _dataset(tmp_path, horizon=6, initial_hours=initial_hours)
+
+
+def test_cross_year_samples_are_limited_to_configured_years(tmp_path):
+    low_times = pd.date_range("2019-12-25 00:00", periods=12 * 24, freq="h")
+    selected_hours = [0, 6, 12, 18]
+    data = _dataset(
+        tmp_path,
+        low_times=low_times,
+        high_times=low_times,
+        years=[2019, 2020],
+        initial_hours=selected_hours,
+        allow_cross_year=True,
+    )
+
+    initial_times = data.time()
+    assert pd.Timestamp("2019-12-31 18:00") in initial_times
+    assert pd.Timestamp("2020-01-01 00:00") in initial_times
+    assert all(timestamp.hour in selected_hours for timestamp in initial_times)
+
+    spanning_samples = 0
+    for index in range(len(data)):
+        metadata = data.sample_metadata(index)
+        sample_times = [*metadata["history_times"], *metadata["target_times"]]
+        assert {timestamp.year for timestamp in sample_times} <= {2019, 2020}
+        spanning_samples += len({timestamp.year for timestamp in sample_times}) > 1
+    assert spanning_samples > 0
+
+
+@pytest.mark.parametrize("allow_cross_year", [False, True])
+def test_year_filter_never_uses_times_outside_selected_years(
+    tmp_path, allow_cross_year
+):
+    low_times = pd.date_range("2019-12-25 00:00", periods=12 * 24, freq="h")
+    data = _dataset(
+        tmp_path,
+        low_times=low_times,
+        high_times=low_times,
+        years=[2019],
+        allow_cross_year=allow_cross_year,
+    )
+
+    for index in range(len(data)):
+        metadata = data.sample_metadata(index)
+        sample_times = [*metadata["history_times"], *metadata["target_times"]]
+        assert {timestamp.year for timestamp in sample_times} == {2019}
+
+
+def test_cross_year_mode_requires_explicit_years(tmp_path):
+    with pytest.raises(ValueError, match="requires an explicit years"):
+        _dataset(tmp_path, horizon=6, years=[], allow_cross_year=True)
 
 
 def test_constant_channel_statistics_remain_normalizable(tmp_path):

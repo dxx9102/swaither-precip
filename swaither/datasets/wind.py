@@ -338,6 +338,8 @@ class WindForecastDataset(DownscalingDataset):
         history_hours: int = 6,
         forecast_horizon_hours: int = 72,
         years: Optional[Sequence[int]] = None,
+        initial_hours: Optional[Sequence[int]] = None,
+        allow_cross_year: bool = False,
         grid_channels: int = 4,
         preload_low: bool = True,
         preload_dtype: str = "float16",
@@ -354,6 +356,21 @@ class WindForecastDataset(DownscalingDataset):
             raise ValueError("grid_channels must be 0 or 4")
         if preload_dtype not in ("float16", "float32"):
             raise ValueError("preload_dtype must be float16 or float32")
+        if allow_cross_year and (years is None or len(years) == 0):
+            raise ValueError("allow_cross_year=True requires an explicit years sequence")
+
+        normalized_initial_hours: Optional[Tuple[int, ...]] = None
+        if initial_hours is not None:
+            normalized_initial_hours = tuple(int(hour) for hour in initial_hours)
+            if not normalized_initial_hours:
+                raise ValueError("initial_hours must not be empty")
+            invalid_hours = [
+                hour for hour in normalized_initial_hours if not 0 <= hour <= 23
+            ]
+            if invalid_hours:
+                raise ValueError(f"initial_hours must be in [0, 23], got {invalid_hours}")
+            if len(set(normalized_initial_hours)) != len(normalized_initial_hours):
+                raise ValueError("initial_hours must be unique")
 
         self.low_res_variables = list(low_res_variables)
         self.high_res_variables = list(high_res_variables)
@@ -368,6 +385,8 @@ class WindForecastDataset(DownscalingDataset):
             raise ValueError("WindForecastDataset expects two wind components")
         self.history_hours = int(history_hours)
         self.forecast_horizon_hours = int(forecast_horizon_hours)
+        self.initial_hours = normalized_initial_hours
+        self.allow_cross_year = bool(allow_cross_year)
         self.grid_channels = int(grid_channels)
         self.normalize = bool(normalize)
         self.nan_policy = nan_policy
@@ -419,6 +438,11 @@ class WindForecastDataset(DownscalingDataset):
             initial_time = history_times[-1]
             if selected_years is not None and initial_time.year not in selected_years:
                 continue
+            if (
+                self.initial_hours is not None
+                and initial_time.hour not in self.initial_hours
+            ):
+                continue
             if any(
                 (history_times[index + 1] - history_times[index]) != pd.Timedelta(hours=1)
                 for index in range(len(history_times) - 1)
@@ -428,7 +452,13 @@ class WindForecastDataset(DownscalingDataset):
                 initial_time + pd.Timedelta(hours=lead)
                 for lead in range(1, self.forecast_horizon_hours + 1)
             ]
-            if len({timestamp.year for timestamp in (*history_times, *target_times)}) != 1:
+            sample_times = (*history_times, *target_times)
+            sample_years = {timestamp.year for timestamp in sample_times}
+            if self.allow_cross_year:
+                assert selected_years is not None
+                if not sample_years.issubset(selected_years):
+                    continue
+            elif len(sample_years) != 1:
                 continue
             target_positions = tuple(
                 self.high_index.time_to_position.get(timestamp, -1)
@@ -439,7 +469,9 @@ class WindForecastDataset(DownscalingDataset):
                 continue
             self.samples.append((history, target_positions))
         if not self.samples:
-            raise ValueError("No complete same-year 6-to-72-hour wind samples remain")
+            raise ValueError(
+                "No complete wind samples remain after applying year and initial-hour filters"
+            )
         if skipped_targets:
             warnings.warn(
                 f"Skipped {skipped_targets} initial times without a complete high-resolution target window",

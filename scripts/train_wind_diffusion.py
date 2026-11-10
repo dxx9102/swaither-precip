@@ -29,6 +29,7 @@ for path in (_REPO_ROOT, _SCRIPT_DIR):
 from swaither.wind_helpers import (
     EpochRandomSubsetSampler,
     configure_storage,
+    expand_initial_time_indices,
     resume_epoch_and_step,
     uniform_random_sample_indices,
 )
@@ -204,18 +205,45 @@ def main(cfg: DictConfig) -> None:
     optimizer_steps = (epoch_steps + accumulation - 1) // accumulation
     max_val = int(cfg.validation.get("max_samples", 0))
     validation_seed = int(cfg.validation.get("sample_seed", cfg.training.seed))
-    validation_indices = uniform_random_sample_indices(
-        len(validation_dataset), max_val, validation_seed
+    sample_by_initial_time = bool(
+        cfg.validation.get("sample_by_initial_time", False)
     )
+    if sample_by_initial_time:
+        selected_initial_indices = uniform_random_sample_indices(
+            len(validation_base), max_val, validation_seed
+        )
+        validation_indices = expand_initial_time_indices(
+            selected_initial_indices,
+            range(len(validation_dataset.leads)),
+            len(validation_dataset.leads),
+        )
+        selected_initial_times = validation_base.time()
+    else:
+        validation_indices = uniform_random_sample_indices(
+            len(validation_dataset), max_val, validation_seed
+        )
+        selected_initial_times = None
     val_data = Subset(validation_dataset, validation_indices.tolist())
     validation_times = validation_dataset.time()
-    print(
-        f"[validation] uniformly sampled {len(validation_indices)}/"
-        f"{len(validation_dataset)} (initial_time, lead) items with "
-        f"seed={validation_seed}; range={validation_times[int(validation_indices[0])]}.."
-        f"{validation_times[int(validation_indices[-1])]}",
-        flush=True,
-    )
+    if sample_by_initial_time:
+        print(
+            f"[validation] uniformly sampled {len(selected_initial_indices)}/"
+            f"{len(validation_base)} initial times with seed={validation_seed}; "
+            f"expanded to {len(validation_indices)}/{len(validation_dataset)} "
+            f"(initial_time, lead) items across {len(validation_dataset.leads)} leads; "
+            f"range={selected_initial_times[int(selected_initial_indices[0])]}.."
+            f"{selected_initial_times[int(selected_initial_indices[-1])]}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[validation] uniformly sampled {len(validation_indices)}/"
+            f"{len(validation_dataset)} (initial_time, lead) items with "
+            f"seed={validation_seed}; range="
+            f"{validation_times[int(validation_indices[0])]}.."
+            f"{validation_times[int(validation_indices[-1])]}",
+            flush=True,
+        )
     sampled_fraction = 100.0 * epoch_items / len(train_dataset)
     print(
         f"[train] sampling {epoch_items}/{len(train_dataset)} "

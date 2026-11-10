@@ -82,6 +82,28 @@ def uniform_random_sample_indices(
     )
 
 
+def expand_initial_time_indices(
+    initial_indices: Sequence[int],
+    lead_positions: Sequence[int],
+    leads_per_initial_time: int,
+) -> np.ndarray:
+    """Expand selected base initial times to every requested lead position."""
+    initial = np.asarray(initial_indices, dtype=np.int64)
+    positions = np.asarray(lead_positions, dtype=np.int64)
+    width = int(leads_per_initial_time)
+    if width < 1:
+        raise ValueError("leads_per_initial_time must be positive")
+    if np.any(initial < 0):
+        raise ValueError("initial_indices must be non-negative")
+    if np.any((positions < 0) | (positions >= width)):
+        raise ValueError("lead_positions must be within the expanded lead dimension")
+    if len(initial) == 0 or len(positions) == 0:
+        return np.empty(0, dtype=np.int64)
+    return (initial[:, None] * width + positions[None, :]).reshape(-1).astype(
+        np.int64, copy=False
+    )
+
+
 def _optional_timestamp(value: Any, name: str) -> Optional[pd.Timestamp]:
     if value is None:
         return None

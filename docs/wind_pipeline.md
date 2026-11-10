@@ -8,8 +8,13 @@ U-Net prediction for each forecast lead.
 
 The workflow uses train-only robust min/max statistics.  The year split is
 `2019-2022` for training, `2023` for validation, and `2024` for testing.  All
-samples require contiguous hourly history and a complete same-year 72-hour
-high-resolution target window.
+samples require contiguous hourly history and a complete 72-hour
+high-resolution target window.  Training samples start at 00, 06, 12, or 18
+UTC and may cross year boundaries inside 2019-2022.  Validation and test
+samples start at daily 00 UTC.  With cross-year sampling enabled, every history
+and target timestamp must remain inside the configured dataset year set, so a
+sample can never cross from training into validation or from validation into
+test.
 
 ## Data contract
 
@@ -25,6 +30,12 @@ Terrain and land-sea mask come only from `fj_HR.nc`; `fj_LRes.nc` is not used.
 The diffusion view expands each initial time into one sample per lead, adds
 `sin/cos` lead-encoding channels, and trains on residuals relative to the frozen
 regression output.
+
+`WindForecastDataset` accepts optional `initial_hours` and `allow_cross_year`
+arguments.  Their defaults retain the legacy all-hour, same-year behavior.
+`allow_cross_year=True` requires an explicit `years` set and permits crossing
+only between years in that set.  The hourly restriction is applied while the
+dataset index is built; it is independent of `training.max_samples`.
 
 ## Environment
 
@@ -221,10 +232,15 @@ forward/backward memory probes.  The smoke job trains one regression and one
 diffusion sample, reloads both checkpoints, runs inference, and evaluates both
 NetCDF outputs.
 
-Training validation subsets are selected by a fixed-seed uniform random draw
-across the complete validation-year dataset.  To compare the saved best
-checkpoint with the final checkpoint on the same 512 uniformly selected 2023
-initial times:
+Regression training validates every complete 2023 daily 00 UTC initial-time
+window (361 samples).  Diffusion validation uses a fixed-seed uniform random
+draw of 32 base initial times across those 361 windows and evaluates every
+configured validation lead (`1, 6, 24, 48, 72`), for 160 expanded pairs.  When
+`validation.sample_by_initial_time` is false, the legacy behavior draws
+`validation.max_samples` individual `(initial_time, lead)` pairs instead.
+
+To compare the saved best checkpoint with the final checkpoint on the same 512
+uniformly selected 2023 initial times:
 
 ```bash
 yhbatch -p a800x_595 -G 1 -c 8 \

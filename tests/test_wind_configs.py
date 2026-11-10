@@ -26,7 +26,11 @@ def test_wind_joint_configs_use_train_validation_test_year_splits():
     ):
         cfg = OmegaConf.load(REPO / "conf" / name)
         assert list(cfg.dataset.years) == [2019, 2020, 2021, 2022]
+        assert list(cfg.dataset.initial_hours) == [0, 6, 12, 18]
+        assert cfg.dataset.allow_cross_year is True
         assert list(cfg.validation.dataset.years) == [2023]
+        assert list(cfg.validation.dataset.initial_hours) == [0]
+        assert cfg.validation.dataset.allow_cross_year is False
         assert cfg.dataset.history_hours == 6
         assert cfg.dataset.forecast_horizon_hours == 72
         assert cfg.dataset.grid_channels == 4
@@ -65,9 +69,16 @@ def test_stats_and_diffusion_configs_cover_complete_lead_range():
     assert diffusion.training.patch_shape_y <= 272
     assert diffusion.training.patch_shape_x <= 320
     assert diffusion.training.epoch_samples == 2048
+    assert diffusion.validation.max_samples == 32
+    assert diffusion.validation.sample_by_initial_time is True
     assert diffusion.training.log_every_steps == 10
     assert diffusion.training.checkpoint_every_steps == 500
     assert "max_samples" not in diffusion.training
+
+
+def test_regression_validation_covers_all_configured_initial_times():
+    regression = OmegaConf.load(REPO / "conf" / "config_training_wind_regression.yaml")
+    assert regression.validation.max_samples == 0
 
 
 def test_old_wind_entrypoints_and_condition_files_are_removed():

@@ -28,6 +28,8 @@ dataset:
   history_hours: 6
   forecast_horizon_hours: 72
   years: [2019, 2020, 2021, 2022]
+  initial_hours: [0, 6, 12, 18]
+  allow_cross_year: true
   grid_channels: 4
   preload_low: true
   preload_dtype: float16
@@ -39,8 +41,9 @@ dataset:
 validation:
   batch_size: 1
   num_workers: 0
-  max_samples: 8
+  max_samples: 32
   sample_seed: 42
+  sample_by_initial_time: true
   leads: [1, 6, 24, 48, 72]
   dataset:
     type: ./swaither/datasets/wind.py::WindForecastDataset
@@ -57,6 +60,8 @@ validation:
     history_hours: 6
     forecast_horizon_hours: 72
     years: [2023]
+    initial_hours: [0]
+    allow_cross_year: false
     grid_channels: 4
     preload_low: true
     preload_dtype: float16
