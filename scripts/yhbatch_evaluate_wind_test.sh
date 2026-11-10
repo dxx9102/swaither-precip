@@ -24,7 +24,7 @@ output_dir="${EVAL_OUTPUT_DIR:-outputs/wind_inference/test_2024}"
 metrics_dir="${output_dir}/metrics"
 regression_file="${output_dir}/regression.nc"
 diffusion_file="${output_dir}/diffusion.nc"
-regression_checkpoint="${REGRESSION_CHECKPOINT:-outputs/wind_regression/checkpoints/WindForecastUNet.best.mdlus}"
+regression_checkpoint="${REGRESSION_CHECKPOINT:-outputs/wind_regression/latest/checkpoints/WindForecastUNet.best.mdlus}"
 diffusion_checkpoint="${DIFFUSION_CHECKPOINT:-outputs/wind_diffusion/latest/checkpoints/WindEDMPrecondSuperResolution.best.mdlus}"
 evaluation_batch_size="${EVAL_BATCH_SIZE:-8}"
 

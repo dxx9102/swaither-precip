@@ -163,24 +163,52 @@ scripts/submit_yhbatch_train_wind_regression.sh
 scripts/submit_yhbatch_train_wind_diffusion.sh
 ```
 
-For example, a submission at `2026-11-04 16:30:00` writes
-`outputs/slurm/wind_regression_train_2026-11-04_16-30-00.out` and places the
-run under `outputs/wind_regression/2026-11-04_16-30-00/`.  Set `RUN_STAMP` to
-override the generated value.  The timestamped wrappers manage
-`hydra.run.dir`, `training.run_dir`, `training.checkpoint_dir`, and
+Pass the Hydra override `paths.outputs=<root>` to place both training products
+and Slurm logs below one custom root:
+
+```bash
+scripts/submit_yhbatch_train_wind_regression.sh paths.outputs=output/xx
+scripts/submit_yhbatch_train_wind_diffusion.sh \
+  paths.outputs=output/xx
+```
+
+Relative roots are resolved from the repository root; absolute roots are also
+accepted.  Omitting `paths.outputs` preserves the existing `<repo>/outputs`
+layout.  For a root `<root>` and submission timestamp `<RUN_STAMP>`, the
+wrappers create:
+
+```text
+<root>/slurm/wind_regression_train_<RUN_STAMP>.out
+<root>/slurm/wind_diffusion_train_<RUN_STAMP>.out
+<root>/wind_regression/<RUN_STAMP>/checkpoints/
+<root>/wind_regression/<RUN_STAMP>/tensorboard/
+<root>/wind_diffusion/<RUN_STAMP>/checkpoints/
+<root>/wind_diffusion/<RUN_STAMP>/tensorboard/
+<root>/wind_regression/latest
+<root>/wind_diffusion/latest
+```
+
+The diffusion submission automatically uses the newest successfully completed
+regression run below the same output root:
+
+```text
+<root>/wind_regression/latest/checkpoints/WindForecastUNet.best.mdlus
+```
+
+The submit wrapper resolves this symlink to the concrete timestamped
+checkpoint before calling `yhbatch`, so changing `latest` while the diffusion
+job is pending does not change which regression model it loads.  A missing or
+dangling `latest`, or a missing best checkpoint, is an error; the wrapper does
+not fall back to a legacy path or scan timestamped directories.  An explicit
+`training.regression_checkpoint=<path>` override takes precedence.
+
+Set `RUN_STAMP` to override the generated timestamp.  The timestamped wrappers
+manage `hydra.run.dir`, `training.run_dir`, `training.checkpoint_dir`, and
 `training.tensorboard_dir`; passing different values for those four keys is
 rejected.  Existing fixed paths under
 `outputs/wind_regression/checkpoints/` and
 `outputs/wind_diffusion/checkpoints/` remain the defaults for direct Python
 training, inference, and checkpoint evaluation.
-
-To opt a timestamped diffusion run into the newest successfully completed
-regression run:
-
-```bash
-scripts/submit_yhbatch_train_wind_diffusion.sh \
-  training.regression_checkpoint=outputs/wind_regression/latest/checkpoints/WindForecastUNet.best.mdlus
-```
 
 ## Inference
 
