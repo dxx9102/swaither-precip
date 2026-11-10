@@ -30,6 +30,30 @@ def _to_python(value: Any) -> Any:
     return value
 
 
+def _validate_augment_labels(
+    augment_labels: torch.Tensor | None,
+    augment_dim: int,
+    batch_size: int,
+    model_name: str,
+) -> torch.Tensor | None:
+    expected = int(augment_dim)
+    if expected == 0:
+        if augment_labels is not None:
+            raise ValueError(f"{model_name} was not configured for augment labels")
+        return None
+    if augment_labels is None:
+        raise ValueError(f"{model_name} requires augment_labels with {expected} features")
+    if augment_labels.ndim != 2 or tuple(augment_labels.shape) != (
+        batch_size,
+        expected,
+    ):
+        raise ValueError(
+            f"Expected augment_labels {(batch_size, expected)}, "
+            f"got {tuple(augment_labels.shape)}"
+        )
+    return augment_labels
+
+
 class WindForecastUNet(Module):
     """One-shot 72-hour high-resolution absolute wind regression.
 
@@ -39,7 +63,19 @@ class WindForecastUNet(Module):
     ``[h1_u, h1_v, ..., h72_u, h72_v]``.
     """
 
-    __model_checkpoint_version__ = 3
+    __model_checkpoint_version__ = 4
+    __supported_model_checkpoint_version__ = {
+        3: "Loading WindForecastUNet checkpoint version 3 without time conditioning."
+    }
+
+    @classmethod
+    def _backward_compat_arg_mapper(
+        cls, version: int, args: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if int(version) == 3:
+            unet_kwargs = args.setdefault("unet_kwargs", {})
+            unet_kwargs.setdefault("augment_dim", 0)
+        return args
 
     def __init__(
         self,
@@ -61,6 +97,9 @@ class WindForecastUNet(Module):
         kwargs.setdefault("img_in_channels", self.img_in_channels)
         kwargs.setdefault("img_out_channels", self.img_out_channels)
         kwargs.setdefault("model_type", "SongUNet")
+        self.augment_dim = int(kwargs.get("augment_dim", 0))
+        if self.augment_dim < 0:
+            raise ValueError("augment_dim must be non-negative")
         self.unet = UNet(**kwargs)
         self.pad_multiple = 2 ** len(list(kwargs.get("channel_mult", [1, 2, 2])))
 
@@ -82,6 +121,7 @@ class WindForecastUNet(Module):
         x0: torch.Tensor,
         img_lr: torch.Tensor,
         augment_pipe: Any = None,
+        augment_labels: torch.Tensor | None = None,
         **unused: Any,
     ) -> torch.Tensor:
         del augment_pipe, unused
@@ -95,6 +135,12 @@ class WindForecastUNet(Module):
             )
         if x0.shape[-2:] != img_lr.shape[-2:]:
             raise ValueError("Latent and condition spatial shapes must match")
+        augment_labels = _validate_augment_labels(
+            augment_labels,
+            self.augment_dim,
+            img_lr.shape[0],
+            "WindForecastUNet",
+        )
         height, width = img_lr.shape[-2:]
         pad_h = (-height) % self.pad_multiple
         pad_w = (-width) % self.pad_multiple
@@ -102,7 +148,12 @@ class WindForecastUNet(Module):
             padding = (0, pad_w, 0, pad_h)
             img_lr = F.pad(img_lr, padding, mode="replicate")
             x0 = F.pad(x0, padding, mode="replicate")
-        prediction = self.unet(x0, img_lr, force_fp32=False)
+        prediction = self.unet(
+            x0,
+            img_lr,
+            force_fp32=False,
+            augment_labels=augment_labels,
+        )
         return prediction[..., :height, :width]
 
 
@@ -145,6 +196,9 @@ class WindEDMPrecondSuperResolution(EDMPrecondSuperResolution):
     ) -> None:
         channel_mult = list(model_kwargs.get("channel_mult", [1, 2, 2, 2]))
         self.pad_multiple = 2 ** len(channel_mult)
+        self.augment_dim = int(model_kwargs.get("augment_dim", 0))
+        if self.augment_dim < 0:
+            raise ValueError("augment_dim must be non-negative")
         model_kwargs.pop("gridtype", None)
         model_kwargs.pop("N_grid_channels", None)
         model_kwargs.pop("model_grid_channels", None)
@@ -170,6 +224,15 @@ class WindEDMPrecondSuperResolution(EDMPrecondSuperResolution):
     ) -> torch.Tensor:
         if x.shape[-2:] != img_lr.shape[-2:]:
             raise ValueError("Latent and condition spatial shapes must match")
+        augment_labels = model_kwargs.get("augment_labels")
+        augment_labels = _validate_augment_labels(
+            augment_labels,
+            self.augment_dim,
+            img_lr.shape[0],
+            "WindEDMPrecondSuperResolution",
+        )
+        if augment_labels is not None:
+            model_kwargs["augment_labels"] = augment_labels
         height, width = img_lr.shape[-2:]
         pad_h = (-height) % self.pad_multiple
         pad_w = (-width) % self.pad_multiple
@@ -206,6 +269,9 @@ class WindRegressionLeadAdapter(torch.nn.Module):
     ) -> None:
         super().__init__()
         self.regression_net = regression_net.eval().requires_grad_(False)
+        self.regression_augment_dim = int(
+            getattr(self.regression_net, "augment_dim", 0)
+        )
         self.forecast_hours = int(forecast_hours)
         self.wind_components = int(wind_components)
         self.conditioning_input_channels = int(conditioning_input_channels)
@@ -219,7 +285,7 @@ class WindRegressionLeadAdapter(torch.nn.Module):
         augment_labels: torch.Tensor | None = None,
         **unused: Any,
     ) -> torch.Tensor:
-        del augment_labels, unused
+        del unused
         if lead_time_label is None:
             raise ValueError("WindRegressionLeadAdapter requires lead_time_label")
         lead = lead_time_label.reshape(-1).to(device=img_lr.device, dtype=torch.long)
@@ -231,6 +297,30 @@ class WindRegressionLeadAdapter(torch.nn.Module):
                 f"Expected {expected_channels} diffusion condition channels, got {img_lr.shape[1]}"
             )
         regression_condition = img_lr[:, : self.conditioning_input_channels]
+        regression_augment_labels = None
+        if self.regression_augment_dim:
+            if (
+                augment_labels is None
+                or augment_labels.ndim != 2
+                or augment_labels.shape[1] < self.regression_augment_dim
+            ):
+                raise ValueError(
+                    "Diffusion augment_labels must include the frozen regression "
+                    f"time features ({self.regression_augment_dim})"
+                )
+            labels = augment_labels[:, : self.regression_augment_dim]
+            # ResidualLoss invokes the regression network once on full-domain
+            # inputs before patchifying the diffusion inputs. Multi-patch
+            # labels are P-major, so take the first copy of every sample.
+            patch_num, remainder = divmod(labels.shape[0], img_lr.shape[0])
+            if remainder or patch_num < 1:
+                raise ValueError(
+                    "Diffusion augment_labels batch must be a whole multiple "
+                    "of the regression input batch"
+                )
+            regression_augment_labels = labels.reshape(
+                patch_num, img_lr.shape[0], self.regression_augment_dim
+            )[0]
         zero_latent = torch.zeros(
             (
                 img_lr.shape[0],
@@ -241,12 +331,64 @@ class WindRegressionLeadAdapter(torch.nn.Module):
             device=img_lr.device,
         )
         with torch.no_grad():
-            forecast = self.regression_net(zero_latent, regression_condition)
+            if regression_augment_labels is None:
+                forecast = self.regression_net(zero_latent, regression_condition)
+            else:
+                forecast = self.regression_net(
+                    zero_latent,
+                    regression_condition,
+                    augment_labels=regression_augment_labels,
+                )
         selected = []
         for item, lead_value in zip(forecast, lead.tolist()):
             start = (int(lead_value) - 1) * self.wind_components
             selected.append(item[start : start + self.wind_components])
         return torch.stack(selected, dim=0)
+
+
+class WindTimeConditionedModel(torch.nn.Module):
+    """Inject fixed global time labels into a sampler's repeated model calls."""
+
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        time_labels: torch.Tensor,
+    ) -> None:
+        super().__init__()
+        self.model = model
+        labels = torch.as_tensor(time_labels)
+        if labels.ndim != 2 or labels.shape[0] != 1:
+            raise ValueError("time_labels must have shape (1, features)")
+        self.register_buffer("time_labels", labels.detach().clone())
+        self.sigma_min = model.sigma_min
+        self.sigma_max = model.sigma_max
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        img_lr: torch.Tensor,
+        sigma: torch.Tensor,
+        class_labels: torch.Tensor | None = None,
+        **model_kwargs: Any,
+    ) -> torch.Tensor:
+        del class_labels
+        labels = self.time_labels.to(device=x.device, dtype=x.dtype)
+        if labels.shape[0] == 1:
+            labels = labels.expand(x.shape[0], -1)
+        elif labels.shape[0] != x.shape[0]:
+            raise ValueError(
+                "time_labels batch does not match the conditioned model batch"
+            )
+        return self.model(
+            x,
+            img_lr,
+            sigma,
+            augment_labels=labels,
+            **model_kwargs,
+        )
+
+    def round_sigma(self, sigma: Any) -> torch.Tensor:
+        return self.model.round_sigma(sigma)
 
 
 class WindRandomPatching2D(RandomPatching2D):
@@ -272,4 +414,5 @@ __all__ = [
     "WindEDMPrecondSuperResolution",
     "WindRegressionLeadAdapter",
     "WindRandomPatching2D",
+    "WindTimeConditionedModel",
 ]

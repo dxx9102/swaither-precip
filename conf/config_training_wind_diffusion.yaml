@@ -80,6 +80,7 @@ model:
     attn_resolutions: []
     dropout: 0.05
     embedding_type: positional
+    augment_dim: 12
     use_apex_gn: false
     checkpoint_level: 1
 

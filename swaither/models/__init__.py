@@ -6,6 +6,7 @@ from .wind_forecast import (
     WindForecastUNet,
     WindRandomPatching2D,
     WindRegressionLeadAdapter,
+    WindTimeConditionedModel,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "WindEDMPrecondSuperResolution",
     "WindRegressionLeadAdapter",
     "WindRandomPatching2D",
+    "WindTimeConditionedModel",
 ]

@@ -6,6 +6,11 @@ hourly low-resolution `u10/v10` history directly to 72 hours of full-domain
 the two-channel residual between the high-resolution truth and the frozen
 U-Net prediction for each forecast lead.
 
+Both networks use SongUNet's native global augmentation embedding for time
+conditioning.  The regression model receives six cyclic initial-time features;
+the residual diffusion model receives six initial-time and six valid-time
+features.  These labels are not added as spatial `H x W` channels.
+
 The workflow uses train-only robust min/max statistics.  The year split is
 `2019-2022` for training, `2023` for validation, and `2024` for testing.  All
 samples require contiguous hourly history and a complete 72-hour
@@ -23,13 +28,24 @@ The regression dataset returns:
 ```text
 y: (144, 281, 321) normalized HR wind, [h1_u, h1_v, ..., h72_u, h72_v]
 x: (18, 281, 321) = 6 * [u10, v10] + [elevation, land_sea_mask] + 4 grid channels
+time6: (6,) = [doy_sin, doy_cos, month_sin, month_cos, hour_sin, hour_cos]
 ```
 
 Low-resolution history is bilinearly interpolated to the complete HR grid.
 Terrain and land-sea mask come only from `fj_HR.nc`; `fj_LRes.nc` is not used.
 The diffusion view expands each initial time into one sample per lead, adds
-`sin/cos` lead-encoding channels, and trains on residuals relative to the frozen
-regression output.
+`sin/cos` lead-encoding channels to make the spatial condition 20 channels, and
+trains on residuals relative to the frozen regression output.  It also returns
+the 12-dimensional label `[initial_time_6, valid_time_6]`, where
+`valid_time = initial_time + lead`.
+
+Time conditioning enters `SongUNet` through `augment_dim` and
+`augment_labels`.  The diffusion time labels and noise level are combined in
+the existing global embedding MLP.  Multi-patch residual training keeps the
+spatial contract unchanged and expands labels in P-major order to match
+`RandomPatching2D`; the frozen regression adapter receives the first six
+initial-time features.  With `augment_dim: 0`, callers omit time labels and the
+model remains compatible with pre-time-conditioning checkpoints.
 
 `WindForecastDataset` accepts optional `initial_hours` and `allow_cross_year`
 arguments.  Their defaults retain the legacy all-hour, same-year behavior.
@@ -254,4 +270,6 @@ The comparison is written to
 subset.
 
 Old Step-1/Step-2 checkpoints are not compatible with the new 144-channel
-regression output or the 20-channel-plus-mean diffusion condition.
+regression output or the 20-channel-plus-mean diffusion condition.  Version-3
+`WindForecastUNet` checkpoints are supported through the explicit backward
+compatibility path and load with time conditioning disabled.

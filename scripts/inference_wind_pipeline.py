@@ -28,7 +28,10 @@ from swaither.wind_helpers import configure_storage
 configure_storage()
 
 from swaither.datasets.wind import WindForecastDataset
-from swaither.models import WindEDMPrecondSuperResolution  # noqa: F401 - checkpoint class registry
+from swaither.models import (  # noqa: F401 - checkpoint class registry
+    WindEDMPrecondSuperResolution,
+    WindTimeConditionedModel,
+)
 from swaither.wind_helpers import (
     WindForecastNetCDFWriter,
     select_initial_indices,
@@ -82,8 +85,15 @@ def _regression_batch(
         device=device,
         dtype=torch.float32,
     )
+    augment_labels = None
+    if int(getattr(model, "augment_dim", 0)) > 0:
+        augment_labels = torch.from_numpy(
+            np.stack(
+                [dataset.initial_time_features(index) for index in indices], axis=0
+            )
+        ).to(device=device, dtype=torch.float32)
     with torch.inference_mode():
-        return model(zeros, x).float()
+        return model(zeros, x, augment_labels=augment_labels).float()
 
 
 def _lead_encoding(dataset: WindForecastDataset, lead: int) -> np.ndarray:
@@ -211,8 +221,16 @@ def _fill_diffusion_outputs(
                 )
                 condition = torch.from_numpy(condition).unsqueeze(0).to(device)
                 seeds = rng.integers(0, 2**31 - 1, size=ensembles, dtype=np.int64)
+                sampling_net = diffusion_model
+                if int(getattr(diffusion_model, "augment_dim", 0)) > 0:
+                    time_labels = torch.from_numpy(
+                        dataset.diffusion_time_features(index, lead)
+                    ).unsqueeze(0)
+                    sampling_net = WindTimeConditionedModel(
+                        diffusion_model, time_labels
+                    ).to(device)
                 residual = diffusion_step(
-                    net=diffusion_model,
+                    net=sampling_net,
                     sampler_fn=sampler_fn,
                     img_shape=dataset.image_shape(),
                     img_out_channels=len(dataset.output_variables),

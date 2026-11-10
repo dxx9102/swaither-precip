@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +103,31 @@ def expand_initial_time_indices(
     return (initial[:, None] * width + positions[None, :]).reshape(-1).astype(
         np.int64, copy=False
     )
+
+
+def expand_time_labels_for_patches(
+    time_labels: torch.Tensor, patch_num: int
+) -> torch.Tensor:
+    """Expand per-sample labels to RandomPatching2D's P-major batch order."""
+    labels = torch.as_tensor(time_labels)
+    patch_num = int(patch_num)
+    if labels.ndim != 2:
+        raise ValueError("time_labels must have shape (batch, features)")
+    if patch_num < 1:
+        raise ValueError("patch_num must be positive")
+    if patch_num == 1:
+        return labels
+    return labels.repeat(patch_num, 1)
+
+
+def make_time_augment_pipe(time_labels: torch.Tensor, patch_num: int = 1):
+    """Build ResidualLoss's augment pipe while preserving spatial inputs."""
+    labels = expand_time_labels_for_patches(time_labels, patch_num)
+
+    def augment_pipe(img_tot: torch.Tensor):
+        return img_tot, labels
+
+    return augment_pipe
 
 
 def _optional_timestamp(value: Any, name: str) -> Optional[pd.Timestamp]:
@@ -618,6 +644,8 @@ def save_metrics_json(path: Path, payload: Dict[str, Any]) -> None:
 __all__ = [
     "configure_storage",
     "uniform_random_sample_indices",
+    "expand_time_labels_for_patches",
+    "make_time_augment_pipe",
     "select_initial_indices",
     "select_monthly_initial_indices",
     "EpochRandomSubsetSampler",

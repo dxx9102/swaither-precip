@@ -8,6 +8,7 @@ residual left by the frozen regression U-Net.
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
@@ -39,6 +40,47 @@ GRID_CHANNEL_NAMES = (
     "grid_cos_lon",
 )
 LEAD_CHANNEL_NAMES = ("lead_sin", "lead_cos")
+TIME_FEATURE_NAMES = (
+    "doy_sin",
+    "doy_cos",
+    "month_sin",
+    "month_cos",
+    "hour_sin",
+    "hour_cos",
+)
+TIME_FEATURE_DIM = len(TIME_FEATURE_NAMES)
+DIFFUSION_TIME_FEATURE_DIM = 2 * TIME_FEATURE_DIM
+
+
+def encode_time_features(timestamp: Any) -> np.ndarray:
+    """Encode one timestamp as cyclic day-of-year, month, and hour features."""
+    value = pd.Timestamp(timestamp)
+    if pd.isna(value):
+        raise ValueError("timestamp must be valid")
+    days_in_year = 366 if calendar.isleap(int(value.year)) else 365
+    doy_angle = 2.0 * np.pi * float(value.day_of_year - 1) / float(days_in_year)
+    month_angle = 2.0 * np.pi * float(value.month - 1) / 12.0
+    hour_angle = 2.0 * np.pi * float(value.hour) / 24.0
+    return np.asarray(
+        [
+            np.sin(doy_angle),
+            np.cos(doy_angle),
+            np.sin(month_angle),
+            np.cos(month_angle),
+            np.sin(hour_angle),
+            np.cos(hour_angle),
+        ],
+        dtype=np.float32,
+    )
+
+
+def encode_initial_valid_times(
+    initial_time: Any, valid_time: Any
+) -> np.ndarray:
+    """Concatenate initial-time and valid-time features for diffusion."""
+    initial = encode_time_features(initial_time)
+    valid = encode_time_features(valid_time)
+    return np.concatenate([initial, valid], axis=0).astype(np.float32, copy=False)
 
 
 def as_path_list(value: Union[PathLike, Sequence[PathLike], None]) -> List[Path]:
@@ -320,9 +362,10 @@ def load_channel_stats(
 class WindForecastDataset(DownscalingDataset):
     """Six-hour low-resolution history to 72-hour high-resolution regression.
 
-    ``__getitem__`` returns ``(y, x)``.  ``y`` is flattened in lead-major
-    ``(72 * 2, H, W)`` order.  ``x`` contains 12 history channels, two HR
-    static fields, and four coordinate channels.
+    ``__getitem__`` returns ``(y, x, time6)``.  ``y`` is flattened in
+    lead-major ``(72 * 2, H, W)`` order.  ``x`` contains 12 history channels,
+    two HR static fields, and four coordinate channels.  ``time6`` contains
+    cyclic day-of-year, month, and hour features for the initial time.
     """
 
     def __init__(
@@ -544,6 +587,21 @@ class WindForecastDataset(DownscalingDataset):
             "lead_hours": list(range(1, self.forecast_horizon_hours + 1)),
         }
 
+    def initial_time_features(self, index: int) -> np.ndarray:
+        """Return the six cyclic features for one sample's initial time."""
+        history, _ = self.samples[index]
+        return encode_time_features(self.low_index.times[history[-1]])
+
+    def diffusion_time_features(self, index: int, lead: int) -> np.ndarray:
+        """Return initial-time and valid-time features for a diffusion lead."""
+        lead = int(lead)
+        if lead < 1 or lead > self.forecast_horizon_hours:
+            raise ValueError("lead must be within the forecast horizon")
+        history, _ = self.samples[index]
+        initial_time = self.low_index.times[history[-1]]
+        valid_time = initial_time + pd.Timedelta(hours=lead)
+        return encode_initial_valid_times(initial_time, valid_time)
+
     def read_physical_history(self, index: int) -> np.ndarray:
         history, _ = self.samples[index]
         if self._low_data is not None:
@@ -692,10 +750,17 @@ class WindForecastDataset(DownscalingDataset):
             *self.image_shape(),
         )
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self, index: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         y = self.target(index)
         x = self.condition(index)
-        return torch.from_numpy(y.copy()).float(), torch.from_numpy(x.copy()).float()
+        time_features = self.initial_time_features(index)
+        return (
+            torch.from_numpy(y.copy()).float(),
+            torch.from_numpy(x.copy()).float(),
+            torch.from_numpy(time_features.copy()).float(),
+        )
 
 
 class WindDiffusionDataset(DownscalingDataset):
@@ -754,7 +819,9 @@ class WindDiffusionDataset(DownscalingDataset):
         )
         return metadata
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(
+        self, index: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         base_index, lead_position = divmod(int(index), len(self.leads))
         lead = self.leads[lead_position]
         y = self.dataset.target_at(base_index, lead - 1)
@@ -767,10 +834,12 @@ class WindDiffusionDataset(DownscalingDataset):
             ]
         )
         x = np.concatenate([x, lead_encoding], axis=0)
+        time_features = self.dataset.diffusion_time_features(base_index, lead)
         return (
             torch.from_numpy(y.copy()).float(),
             torch.from_numpy(x.copy()).float(),
             torch.tensor(lead, dtype=torch.long),
+            torch.from_numpy(time_features.copy()).float(),
         )
 
 
@@ -782,4 +851,9 @@ __all__ = [
     "load_channel_stats",
     "GRID_CHANNEL_NAMES",
     "LEAD_CHANNEL_NAMES",
+    "TIME_FEATURE_NAMES",
+    "TIME_FEATURE_DIM",
+    "DIFFUSION_TIME_FEATURE_DIM",
+    "encode_time_features",
+    "encode_initial_valid_times",
 ]

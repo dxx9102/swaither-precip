@@ -11,9 +11,13 @@ import xarray as xr
 from torch.utils.data import DataLoader
 
 from swaither.datasets.wind import (
+    DIFFUSION_TIME_FEATURE_DIM,
     FileTimeIndex,
+    TIME_FEATURE_DIM,
     WindDiffusionDataset,
     WindForecastDataset,
+    encode_initial_valid_times,
+    encode_time_features,
     load_channel_stats,
     parse_hourly_times,
 )
@@ -137,6 +141,69 @@ def test_parse_icon_hourly_times_and_reject_off_hour():
         parse_hourly_times(np.array([20240101.02]))
     with pytest.raises(ValueError, match="exact hour"):
         parse_hourly_times(np.array(["2024-01-01T00:30:00Z"]))
+
+
+def test_time_features_encode_calendar_cycles_with_leap_year_day_count():
+    ordinary = encode_time_features(pd.Timestamp("2023-07-01 12:00"))
+    doy_angle = 2.0 * np.pi * (181 / 365)
+    month_angle = 2.0 * np.pi * (6 / 12)
+    hour_angle = 2.0 * np.pi * (12 / 24)
+    np.testing.assert_allclose(
+        ordinary,
+        [
+            np.sin(doy_angle),
+            np.cos(doy_angle),
+            np.sin(month_angle),
+            np.cos(month_angle),
+            np.sin(hour_angle),
+            np.cos(hour_angle),
+        ],
+        rtol=0,
+        atol=1e-7,
+    )
+    assert ordinary.dtype == np.float32
+    assert ordinary.shape == (TIME_FEATURE_DIM,)
+
+    leap_day = encode_time_features(pd.Timestamp("2020-02-29 06:00"))
+    leap_doy_angle = 2.0 * np.pi * (59 / 366)
+    np.testing.assert_allclose(
+        leap_day[:2],
+        [np.sin(leap_doy_angle), np.cos(leap_doy_angle)],
+        rtol=0,
+        atol=1e-7,
+    )
+
+
+def test_time_features_cover_hour_cycle_and_wrap_across_new_year():
+    expected_hours = {
+        0: (0.0, 1.0),
+        6: (1.0, 0.0),
+        12: (0.0, -1.0),
+        18: (-1.0, 0.0),
+    }
+    for hour, expected in expected_hours.items():
+        encoded = encode_time_features(pd.Timestamp(f"2024-01-01 {hour:02d}:00"))
+        np.testing.assert_allclose(encoded[4:], expected, rtol=0, atol=1e-6)
+
+    end = encode_time_features(pd.Timestamp("2023-12-31 23:00"))
+    start = encode_time_features(pd.Timestamp("2024-01-01 00:00"))
+    end_angle = 2.0 * np.pi * (364 / 365)
+    np.testing.assert_allclose(
+        end[:2], [np.sin(end_angle), np.cos(end_angle)], rtol=0, atol=1e-7
+    )
+    np.testing.assert_allclose(start[:2], [0.0, 1.0], rtol=0, atol=1e-7)
+
+
+def test_diffusion_time_features_concatenate_initial_and_valid_time():
+    initial = pd.Timestamp("2020-02-28 18:00")
+    valid = initial + pd.Timedelta(hours=12)
+    encoded = encode_initial_valid_times(initial, valid)
+    assert encoded.shape == (DIFFUSION_TIME_FEATURE_DIM,)
+    np.testing.assert_allclose(
+        encoded,
+        np.concatenate([encode_time_features(initial), encode_time_features(valid)]),
+    )
+    assert encoded.dtype == np.float32
 
 
 def test_select_initial_indices_uses_inclusive_2024_test_window():
@@ -307,9 +374,11 @@ def test_resume_epoch_and_step_supports_new_and_legacy_checkpoints():
 
 def test_joint_dataset_returns_hr_absolute_target_and_high_only_static(tmp_path):
     data = _dataset(tmp_path, horizon=72)
-    y, x = data[0]
+    y, x, time6 = data[0]
     assert y.shape == (144, 9, 11)
     assert x.shape == (18, 9, 11)
+    assert time6.shape == (TIME_FEATURE_DIM,)
+    np.testing.assert_allclose(time6.numpy(), data.initial_time_features(0))
     assert data.image_shape() == (9, 11)
     assert [c.name for c in data.input_channels()] == ["u10", "v10"] * 6 + [
         "elevation",
@@ -326,7 +395,7 @@ def test_joint_dataset_returns_hr_absolute_target_and_high_only_static(tmp_path)
 
 def test_normalization_and_lead_major_channel_order(tmp_path):
     data = _dataset(tmp_path, horizon=3)
-    y, x = data[0]
+    y, x, _ = data[0]
     physical_x = data.denormalize_input(x.numpy())
     restored_x = data.normalize_input(physical_x)
     np.testing.assert_allclose(restored_x, x.numpy(), rtol=0, atol=1e-6)
@@ -356,10 +425,14 @@ def test_diffusion_view_expands_initial_times_by_lead(tmp_path):
     base = _dataset(tmp_path, horizon=4)
     diffusion = WindDiffusionDataset(base, leads=[1, 3, 4])
     assert len(diffusion) == len(base) * 3
-    y, x, lead = diffusion[1]
+    y, x, lead, time12 = diffusion[1]
     assert y.shape == (2, 9, 11)
     assert x.shape == (20, 9, 11)
     assert int(lead) == 3
+    assert time12.shape == (DIFFUSION_TIME_FEATURE_DIM,)
+    np.testing.assert_allclose(time12.numpy(), base.diffusion_time_features(0, 3))
+    with pytest.raises(ValueError, match="lead"):
+        base.diffusion_time_features(0, 0)
     phase = 2.0 * np.pi * 2.0 / 4.0
     assert torch.allclose(x[-2], torch.full_like(x[-2], np.sin(phase)), atol=1e-6)
     assert torch.allclose(x[-1], torch.full_like(x[-1], np.cos(phase)), atol=1e-6)

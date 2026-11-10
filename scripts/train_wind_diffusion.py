@@ -9,7 +9,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import hydra
 import numpy as np
@@ -30,6 +30,7 @@ from swaither.wind_helpers import (
     EpochRandomSubsetSampler,
     configure_storage,
     expand_initial_time_indices,
+    make_time_augment_pipe,
     resume_epoch_and_step,
     uniform_random_sample_indices,
 )
@@ -140,6 +141,23 @@ def _patches(
     )
 
 
+def _augment_pipe(
+    model: torch.nn.Module,
+    time_labels: torch.Tensor,
+    patching: WindRandomPatching2D | None = None,
+) -> Callable | None:
+    augment_dim = int(getattr(model, "augment_dim", 0))
+    if augment_dim <= 0:
+        return None
+    if time_labels.ndim != 2 or time_labels.shape[1] != augment_dim:
+        raise ValueError(
+            f"Expected time labels (batch, {augment_dim}), "
+            f"got {tuple(time_labels.shape)}"
+        )
+    patch_num = int(getattr(patching, "patch_num", 1)) if patching else 1
+    return make_time_augment_pipe(time_labels, patch_num)
+
+
 def _validation(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -152,10 +170,11 @@ def _validation(
     residual_total = 0.0
     count = 0
     with torch.no_grad():
-        for y, x, lead in loader:
+        for y, x, lead, time_labels in loader:
             y = y.to(device, non_blocking=True)
             x = x.to(device, non_blocking=True)
             lead = lead.to(device, non_blocking=True)
+            time_labels = time_labels.to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16,
@@ -166,6 +185,7 @@ def _validation(
                     img_clean=y,
                     img_lr=x,
                     lead_time_label=lead,
+                    augment_pipe=_augment_pipe(model, time_labels),
                 )
             loss_total += float(loss.sum().cpu())
             mean = loss_fn.y_mean
@@ -311,10 +331,11 @@ def main(cfg: DictConfig) -> None:
     )
 
     if bool(cfg.training.get("memory_probe", True)) and device.type == "cuda":
-        y, x, lead = next(iter(train_loader))
+        y, x, lead, time_labels = next(iter(train_loader))
         y = y.to(device)
         x = x.to(device)
         lead = lead.to(device)
+        time_labels = time_labels.to(device)
         optimizer.zero_grad(set_to_none=True)
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
@@ -324,6 +345,7 @@ def main(cfg: DictConfig) -> None:
                 img_clean=y,
                 img_lr=x,
                 lead_time_label=lead,
+                augment_pipe=_augment_pipe(model, time_labels, patching),
                 patching=patching,
             )
             loss = loss.sum() / y.shape[0]
@@ -402,7 +424,7 @@ def main(cfg: DictConfig) -> None:
         while True:
             data_started = time.perf_counter()
             try:
-                y, x, lead = next(iterator)
+                y, x, lead, time_labels = next(iterator)
             except StopIteration:
                 break
             interval_data_seconds += time.perf_counter() - data_started
@@ -412,6 +434,7 @@ def main(cfg: DictConfig) -> None:
             y = y.to(device, non_blocking=True)
             x = x.to(device, non_blocking=True)
             lead = lead.to(device, non_blocking=True)
+            time_labels = time_labels.to(device, non_blocking=True)
             if patching is not None:
                 patching.reset_patch_indices()
             with torch.autocast(
@@ -424,6 +447,7 @@ def main(cfg: DictConfig) -> None:
                     img_clean=y,
                     img_lr=x,
                     lead_time_label=lead,
+                    augment_pipe=_augment_pipe(model, time_labels, patching),
                     patching=patching,
                 )
                 reduced = loss.sum() / y.shape[0]

@@ -15,19 +15,29 @@
 # limitations under the License.
 
 from .wind import (
+    DIFFUSION_TIME_FEATURE_DIM,
     GRID_CHANNEL_NAMES,
     LEAD_CHANNEL_NAMES,
+    TIME_FEATURE_DIM,
+    TIME_FEATURE_NAMES,
     WindDiffusionDataset,
     WindForecastDataset,
+    encode_initial_valid_times,
+    encode_time_features,
     load_channel_stats,
     parse_hourly_times,
 )
 
 __all__ = [
+    "DIFFUSION_TIME_FEATURE_DIM",
     "GRID_CHANNEL_NAMES",
     "LEAD_CHANNEL_NAMES",
+    "TIME_FEATURE_DIM",
+    "TIME_FEATURE_NAMES",
     "WindDiffusionDataset",
     "WindForecastDataset",
+    "encode_initial_valid_times",
+    "encode_time_features",
     "load_channel_stats",
     "parse_hourly_times",
 ]

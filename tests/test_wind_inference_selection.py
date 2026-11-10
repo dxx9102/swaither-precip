@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
+import torch
 from omegaconf import OmegaConf
 
-from scripts.inference_wind_pipeline import _diffusion_indices, _selected_indices
+from scripts.inference_wind_pipeline import (
+    _diffusion_indices,
+    _regression_batch,
+    _selected_indices,
+)
 
 
 class _Dataset:
@@ -56,3 +62,48 @@ def test_diffusion_monthly_selection_disabled_uses_legacy_indices():
     )
 
     assert _diffusion_indices(dataset, cfg) == _selected_indices(dataset, cfg)
+
+
+def test_regression_inference_passes_detected_initial_time_features():
+    class Dataset:
+        output_variables = ["u10", "v10"]
+        forecast_horizon_hours = 2
+
+        @staticmethod
+        def condition(index):
+            return np.full((18, 3, 5), float(index), dtype=np.float32)
+
+        @staticmethod
+        def image_shape():
+            return (3, 5)
+
+        @staticmethod
+        def initial_time_features(index):
+            values = np.arange(6, dtype=np.float32)
+            return values + float(index)
+
+    class Model(torch.nn.Module):
+        augment_dim = 6
+
+        def __init__(self):
+            super().__init__()
+            self.labels = None
+
+        def forward(self, zeros, condition, augment_labels=None):
+            self.labels = augment_labels
+            return zeros
+
+    model = Model()
+    output = _regression_batch(
+        model, Dataset(), [2, 4], torch.device("cpu")
+    )
+    assert output.shape == (2, 4, 3, 5)
+    expected = torch.from_numpy(
+        np.stack(
+            [
+                np.arange(6, dtype=np.float32) + 2.0,
+                np.arange(6, dtype=np.float32) + 4.0,
+            ]
+        )
+    )
+    torch.testing.assert_close(model.labels, expected)

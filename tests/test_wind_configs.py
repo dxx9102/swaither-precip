@@ -64,6 +64,11 @@ def test_stats_and_diffusion_configs_cover_complete_lead_range():
     assert "static_low_file" not in stats.dataset
 
     diffusion = OmegaConf.load(REPO / "conf/config_training_wind_diffusion.yaml")
+    regression = OmegaConf.load(REPO / "conf/config_training_wind_regression.yaml")
+    assert regression.model.unet.embedding_type == "positional"
+    assert regression.model.unet.augment_dim == 6
+    assert diffusion.model.model_args.embedding_type == "positional"
+    assert diffusion.model.model_args.augment_dim == 12
     assert list(diffusion.dataset.leads) == list(range(1, 73))
     assert diffusion.model.hr_mean_conditioning is True
     assert diffusion.training.patch_shape_y <= 272

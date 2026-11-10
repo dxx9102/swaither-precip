@@ -71,7 +71,8 @@ model:
     channel_mult: [1, 2, 2]
     attn_resolutions: []
     dropout: 0.05
-    embedding_type: zero
+    embedding_type: positional
+    augment_dim: 6
     use_apex_gn: false
 
 training:

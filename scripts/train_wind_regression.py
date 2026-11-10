@@ -70,6 +70,12 @@ def _model(
     )
 
 
+def _augment_labels(
+    model: torch.nn.Module, labels: torch.Tensor | None
+) -> torch.Tensor | None:
+    return labels if int(getattr(model, "augment_dim", 0)) > 0 else None
+
+
 def _validation(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -95,16 +101,23 @@ def _validation(
             destination[name] = (previous_sum + value * weight, previous_weight + weight)
 
     with torch.no_grad():
-        for y, x in loader:
+        for y, x, time_labels in loader:
             y = y.to(device, non_blocking=True)
             x = x.to(device, non_blocking=True)
+            time_labels = time_labels.to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16,
                 enabled=amp and device.type == "cuda",
             ):
-                prediction = model(torch.zeros_like(y), x)
-            squared_error += float(torch.mean((prediction.float() - y.float()) ** 2).cpu()) * y.numel()
+                prediction = model(
+                    torch.zeros_like(y),
+                    x,
+                    augment_labels=_augment_labels(model, time_labels),
+                )
+            squared_error += float(
+                torch.mean((prediction.float() - y.float()) ** 2).cpu()
+            ) * y.numel()
             value_count += y.numel()
 
             pred_fields = dataset.forecast_fields(prediction.float().cpu().numpy())
@@ -162,14 +175,19 @@ def _probe_cuda_memory(
 ) -> None:
     if device.type != "cuda":
         return
-    y, x = next(iter(loader))
+    y, x, time_labels = next(iter(loader))
     y = y.to(device, non_blocking=True)
     x = x.to(device, non_blocking=True)
+    time_labels = time_labels.to(device, non_blocking=True)
     optimizer.zero_grad(set_to_none=True)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp):
-        prediction = model(torch.zeros_like(y), x)
+        prediction = model(
+            torch.zeros_like(y),
+            x,
+            augment_labels=_augment_labels(model, time_labels),
+        )
         loss = torch.mean((prediction.float() - y.float()) ** 2)
     loss.backward()
     torch.cuda.synchronize(device)
@@ -282,15 +300,20 @@ def main(cfg: DictConfig) -> None:
         running_squared_error = 0.0
         trained_values = 0
         optimizer.zero_grad(set_to_none=True)
-        for step, (y, x) in enumerate(train_loader, start=1):
+        for step, (y, x, time_labels) in enumerate(train_loader, start=1):
             y = y.to(device, non_blocking=True)
             x = x.to(device, non_blocking=True)
+            time_labels = time_labels.to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16,
                 enabled=amp and device.type == "cuda",
             ):
-                prediction = model(torch.zeros_like(y), x)
+                prediction = model(
+                    torch.zeros_like(y),
+                    x,
+                    augment_labels=_augment_labels(model, time_labels),
+                )
                 loss = torch.mean((prediction.float() - y.float()) ** 2)
             (loss / accumulation).backward()
             if step % accumulation == 0 or step == len(train_loader):
